@@ -1,0 +1,6 @@
+models/
+logs/
+submissions/
+data/
+notebooks/.ipynb_checkpoints/
+.vscode/
