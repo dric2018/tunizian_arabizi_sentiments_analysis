@@ -26,9 +26,6 @@ except ImportError:
     from model import Model
 
 
-seed_everything(Config.seed_value)
-
-
 def make_folds(data: pd.DataFrame, args: argparse.Namespace, target_col='label', stratified: bool = True):
     data['fold'] = 0
 
