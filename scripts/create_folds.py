@@ -1,12 +1,9 @@
 import os
 import sys
 import pandas as pd
-try:
-    from .utils import make_folds
-    from .config import Config
-except ImportError:
-    from utils import make_folds
-    from config import Config
+
+from utils import make_folds
+from config import Config
 import argparse
 
 parser = argparse.ArgumentParser(prog="Init cross-validation")

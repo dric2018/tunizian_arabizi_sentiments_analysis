@@ -3,10 +3,10 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 import pytorch_lightning as pl
-from pytorch_lightning import Trainer, loggers, seed_everything
+from pytorch_lightning import Trainer, loggers
 
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 import numpy as np
@@ -16,14 +16,15 @@ import argparse
 
 from tqdm.auto import tqdm
 
-try:
-    from .config import Config
-    from .dataset import DataSet, DataModule
-    from .model import Model
-except ImportError:
-    from config import Config
-    from dataset import DataSet, DataModule
-    from model import Model
+from config import Config
+
+
+# learning rate schedule params
+LR_START = 1e-5
+LR_MAX = 1e-3
+LR_RAMPUP_EPOCHS = 5
+LR_SUSTAIN_EPOCHS = 0
+LR_STEP_DECAY = 0.75
 
 
 def make_folds(data: pd.DataFrame, args: argparse.Namespace, target_col='label', stratified: bool = True):
@@ -88,3 +89,19 @@ def run_fold(fold, train_df, args, size=(224, 224), arch='resnet18', pretrained=
     gc.collect()  # collect garbage
 
     return trainer.logged_metrics
+
+
+# CUSTOM LEARNING SCHEUDLE
+# """
+# from https://www.kaggle.com/cdeotte/how-to-compete-with-gpus-workshop#STEP-4:-Training-Schedule
+# """
+
+def ramp_scheduler(epoch):
+    if epoch < LR_RAMPUP_EPOCHS:
+        lr = (LR_MAX - LR_START) / LR_RAMPUP_EPOCHS * epoch + LR_START
+    elif epoch < LR_RAMPUP_EPOCHS + LR_SUSTAIN_EPOCHS:
+        lr = LR_MAX
+    else:
+        lr = LR_MAX * \
+            LR_STEP_DECAY**((epoch - LR_RAMPUP_EPOCHS - LR_SUSTAIN_EPOCHS)//10)
+    return lr

@@ -12,14 +12,10 @@ from PIL import Image
 from sklearn.model_selection import train_test_split
 
 from transformers import AutoTokenizer
-
-try:
-    from .config import Config
-except ImportError:
-    from config import Config
+from config import Config
 
 # set seed
-seed_everything(Config.seed_value)
+# seed_everything(Config.seed_value)
 
 
 class DataSet(Dataset):
@@ -138,4 +134,4 @@ if __name__ == '__main__':
     print('[INFO] Setting data module up')
     dm.setup()
 
-    print(dm.train_ds[0])
+    print(dm.train_ds[4])
