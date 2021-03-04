@@ -12,6 +12,9 @@ from transformers import get_linear_schedule_with_warmup
 
 from utils import ramp_scheduler
 
+import pandas as pd
+import os
+from dataset import DataModule
 
 # * Encoder/Features extractor: bert/roberta/distilbert multilingual
 # * Decoder/Classifier : linear layer (bert_out_features, n_classes)
@@ -27,6 +30,7 @@ class Model(pl.LightningModule):
     def __init__(
             self,
             class_w=None,
+            max_len: int = Config.max_len,
             base_model: str = Config.base_model,
             freeze: bool = False):
         super(Model, self).__init__()
@@ -34,7 +38,13 @@ class Model(pl.LightningModule):
         self.save_hyperparameters()
         # load pretrained model from torchvision or anywheare else
         try:
-            self.encoder = AutoModel.from_pretrained(Config.base_model)
+            self.encoder = AutoModel.from_pretrained(
+                Config.base_model,
+                # Whether the model returns attentions weights.
+                output_attentions=False,
+                # Whether the model returns all hidden-states.
+                output_hidden_states=False,
+            )
             # print(self.encoder)
         except Exception as e:
             print(f'{e}')
@@ -63,18 +73,39 @@ class Model(pl.LightningModule):
                 param.requires_grad = False
 
         self.dropout = nn.Dropout(p=.35)
-        self.decoder = nn.Linear(
-            in_features=self.num_ftrs,
-            out_features=Config.n_classes
-        )
+        if "distilbert" in self.hparams.base_model:
+            self.pooler = nn.Linear(
+                in_features=self.num_ftrs,
+                out_features=self.num_ftrs
+            )
+            self.decoder = nn.Linear(
+                in_features=self.num_ftrs,
+                out_features=Config.n_classes
+            )
+
+        else:
+            self.decoder = nn.Linear(
+                in_features=self.num_ftrs,
+                out_features=Config.n_classes
+            )
 
         #########
         # methods
         #########
 
     def forward(self, ids, mask, targets=None):
+        bs = ids.size(0)
         # extract features
-        _, out = self.encoder(ids, mask)
+        try:
+            outputs = self.encoder(ids.squeeze(1), mask.squeeze(1))
+            last_hidden_state = outputs.last_hidden_state
+            out = outputs.pooler_output
+            # print(out)
+        except:
+            outputs = self.encoder(ids.squeeze(1), mask.squeeze(1))
+            # print(outputs)
+            out = outputs.last_hidden_state[:, 0]
+
         # apply dropout
         out = self.dropout(out)
         # apply classifier
@@ -212,6 +243,44 @@ if __name__ == "__main__":
             class_w=None
         )
 
+        print('[INFO] Model built')
         print(model)
+
+        print('[INFO] Loading some data')
+        print("[INFO] Reading dataframe")
+        train_df = pd.read_csv(os.path.join(
+            Config.data_dir, 'Train.csv'), nrows=1000)
+
+        print("[INFO] Building data module")
+        dm = DataModule(
+            df=train_df,
+            frac=1,
+            train_batch_size=Config.train_batch_size,
+            test_batch_size=Config.test_batch_size,
+            test_size=.15
+        )
+
+        dm.setup()
+
+        for batch in dm.val_dataloader():
+            ids, mask, targets = batch['ids'], batch['mask'], batch['target']
+            print('[INFO] input_ids shape :', ids.shape)
+            print('[INFO] Attention mask shape :', mask.shape)
+            print('[INFO] Targets shape :', targets.shape)
+
+            try:
+
+                print('[INFO] Forward pass')
+                logits = model(
+                    ids=ids,
+                    mask=mask
+                )
+                print("[INFO] Logits : ", logits.shape)
+                print("[INFO] Predictions : ", th.argmax(
+                    input=logits, dim=-1))
+            except Exception as e:
+                print(e)
+            break
+
     except Exception as e:
         print(f'[ERROR] {e}')

@@ -41,7 +41,7 @@ class DataSet(Dataset):
             truncation=True,
             return_tensors='pt'
         )
-        print(code)
+        # print(code)
 
         sample = {
             'text': str(text),  # image tensor
@@ -66,7 +66,7 @@ class DataModule(pl.LightningDataModule):
                  frac: float = 0,
                  train_batch_size: int = 64,
                  test_batch_size: int = 32,
-                 test_size: float = .1,
+                 test_size: float = .1
                  ):
         super().__init__()
         self.frac = frac
@@ -134,4 +134,4 @@ if __name__ == '__main__':
     print('[INFO] Setting data module up')
     dm.setup()
 
-    print(dm.train_ds[4])
+    # print(dm.train_ds[4])
