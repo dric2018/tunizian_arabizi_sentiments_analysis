@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import pytorch_lightning as pl
+from pytorch_lightning.metrics.functional import accuracy
 
 from transformers import AutoModel
 from transformers import get_linear_schedule_with_warmup
@@ -15,6 +16,7 @@ from utils import ramp_scheduler
 import pandas as pd
 import os
 from dataset import DataModule
+
 
 # * Encoder/Features extractor: bert/roberta/distilbert multilingual
 # * Decoder/Classifier : linear layer (bert_out_features, n_classes)
@@ -105,6 +107,7 @@ class Model(pl.LightningModule):
             outputs = self.encoder(ids.squeeze(1), mask.squeeze(1))
             # print(outputs)
             out = outputs.last_hidden_state[:, 0]
+            out = self.pooler(out)
 
         # apply dropout
         out = self.dropout(out)
@@ -114,7 +117,7 @@ class Model(pl.LightningModule):
         return out
 
     def configure_optimizers(self):
-        param_optimizer = list(self.model.named_parameters())
+        param_optimizer = list(self.encoder.named_parameters())
         no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
         optimizer_parameters = [
             {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
@@ -127,7 +130,7 @@ class Model(pl.LightningModule):
 
         opt = th.optim.SGD(
             optimizer_parameters,
-            lr=self.hparams.lr
+            lr=Config.lr
         )
 
         scheduler = th.optim.lr_scheduler.LambdaLR(
@@ -141,14 +144,15 @@ class Model(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         ids, mask, targets = batch['ids'], batch['mask'], batch['target']
         # make predictions
-        predictions = self(ids, mask)
+        logits = self(ids, mask)
 
         # compute metrics
         # loss
-        loss = self.get_loss(preds=predictions, targets=targets)
+        loss = self.get_loss(preds=logits, targets=targets)
 
         # accuracy
-        acc = self.get_acc(preds=predictions, targets=targets)
+        probas = F.sigmoid(input=logits)
+        acc = self.get_acc(preds=probas, targets=targets)
 
         # logging stuff
         self.log('train_acc', acc, on_step=True,
@@ -156,7 +160,7 @@ class Model(pl.LightningModule):
 
         return {'loss': loss,
                 'accuracy': acc,
-                "predictions": predictions,
+                "predictions": logits.argmax(dim=1),
                 'targets': targets}
 
     def training_epoch_end(self, outputs):
@@ -179,14 +183,15 @@ class Model(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         ids, mask, targets = batch['ids'], batch['mask'], batch['target']
         # make predictions
-        predictions = self(ids, mask)
+        logits = self(ids, mask)
 
         # compute metrics
         # loss
-        loss = self.get_loss(preds=predictions, targets=targets)
+        loss = self.get_loss(preds=logits, targets=targets)
 
         # accuracy
-        acc = self.get_acc(preds=predictions, targets=targets)
+        preds = logits.argmax(dim=1)
+        acc = self.get_acc(preds=preds, targets=targets)
 
         # logging stuff
         self.log('val_acc', acc, on_step=False,
@@ -194,7 +199,7 @@ class Model(pl.LightningModule):
 
         return {'loss': loss,
                 'accuracy': acc,
-                "predictions": predictions,
+                "predictions": logits.argmax(dim=1),
                 'targets': targets}
 
     def validation_epoch_end(self, outputs):
@@ -228,12 +233,12 @@ class Model(pl.LightningModule):
     def get_loss(self, preds, targets):
         preds = preds.cpu()
         targets = targets.cpu()
-        return nn.CrossEntropyLoss(weight=class_w)(input=preds, target=targets)
+        return nn.CrossEntropyLoss(weight=self.hparams.class_w)(input=preds, target=targets)
 
     def get_acc(self, preds, targets):
         preds = preds.cpu()
         targets = targets.cpu()
-        return accuracy(pred=preds, target=targets)
+        return (preds == targets).float().mean()
 
 
 if __name__ == "__main__":
@@ -275,9 +280,13 @@ if __name__ == "__main__":
                     ids=ids,
                     mask=mask
                 )
+                print(logits)
+                preds = th.argmax(input=logits, dim=-1)
                 print("[INFO] Logits : ", logits.shape)
-                print("[INFO] Predictions : ", th.argmax(
-                    input=logits, dim=-1))
+                print("[INFO] Predictions : ", preds)
+
+                acc = model.get_acc(preds=preds, targets=targets)
+                print("[INFO] acc : ", acc)
             except Exception as e:
                 print(e)
             break

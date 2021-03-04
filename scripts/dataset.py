@@ -51,7 +51,7 @@ class DataSet(Dataset):
         }
 
         if self.task == 'train':
-            target = self.df.iloc[index].label
+            target = self.df.iloc[index].label + 1
             sample.update({
                 'target': th.tensor(target, dtype=th.long)
             })

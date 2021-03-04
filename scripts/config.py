@@ -16,3 +16,4 @@ class Config:
     train_batch_size = 4
     test_batch_size = 4
     num_epochs = 10
+    lr = 3e-4
