@@ -26,8 +26,10 @@ class DataSet(Dataset):
         self.df = df
         self.task = task
         self.tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
+        self.text_ids = df.ID.values
 
         # print(self.images_dir)
+
     def __len__(self):
         return len(self.df)
 

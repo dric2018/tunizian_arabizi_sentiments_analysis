@@ -245,7 +245,7 @@ class Model1(pl.LightningModule):
     def __init__(self,
                  tokenizer,
                  class_w=None,
-                 dv:str = 'cuda',
+                 dv: str = 'cuda',
                  input_size=Config.max_len,
                  sequence_len=Config.max_len,
                  hidden_size=300,
@@ -253,20 +253,19 @@ class Model1(pl.LightningModule):
                  embedding_dim=150,
                  num_layers=Config.num_layers):
         super(Model1, self).__init__()
-        
+
         d = dict(Config.__dict__)
-        conf_dict = {k:d[k] for k in d.keys() if '__' not in k}
+        conf_dict = {k: d[k] for k in d.keys() if '__' not in k}
         self.save_hyperparameters(conf_dict)
-        
+
         self.tokenizer = tokenizer
         self.sequence_len = sequence_len
-        self.hidden_size =hidden_size
-        self.input_size= input_size
+        self.hidden_size = hidden_size
+        self.input_size = input_size
         self.dropout_prob = dropout_prob
-        self.class_w =class_w
+        self.class_w = class_w
         self.num_layers = num_layers
         self.dv = dv
-        
 
         self.embedding = nn.Embedding(
             num_embeddings=self.tokenizer.vocab_size+1,
@@ -293,13 +292,15 @@ class Model1(pl.LightningModule):
         """
         inspired from : https://github.com/aladdinpersson/Machine-Learning-Collection/blob/master/ML/Pytorch/Basics/pytorch_rnn_gru_lstm.py
         """
+        # flatten parameters
+        self.encoder.flatten_parameters()
         # compute embedding
         out = self.embedding(seq.squeeze(1))
         # print('emb shape : ', out.shape)
         # compute init hidden size
         h0 = th.zeros(self.num_layers * 2,  # if bidirectional multiply num_layers by 2
-            seq.size(0),
-            self.hidden_size).to(self.dv)
+                      seq.size(0),
+                      self.hidden_size).to(self.dv)
         # print('h0 shape : ', h0.shape)
         last_hidden_state, _ = self.encoder(out, h0)
         out = last_hidden_state[:, 0]
@@ -408,13 +409,13 @@ class Model1(pl.LightningModule):
         scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer=opt,
             mode='max',
-            factor=0.1,
-            patience=3,
+            factor=0.01,
+            patience=10,
             threshold=0.0001,
             threshold_mode='rel',
             cooldown=0,
             min_lr=0,
-            eps=1e-08,
+            eps=1e-8,
             verbose=True,
         )
         return {"optimizer": opt,

@@ -18,5 +18,5 @@ class Config:
     num_epochs = 60
     drop_out_prob = .25   
     early_stopping_patience=15
-    num_layers = 3
+    num_layers = 4
     lr = 5e-3

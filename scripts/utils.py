@@ -1,6 +1,6 @@
 import os
 
-import torch
+import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -17,7 +17,7 @@ import argparse
 from tqdm.auto import tqdm
 
 from config import Config
-
+from dataset import DataSet
 
 # learning rate schedule params
 LR_START = 1e-5
@@ -51,7 +51,7 @@ def make_folds(data: pd.DataFrame, args: argparse.Namespace, target_col='label',
 
 def run_fold(fold, train_df, args, size=(224, 224), arch='resnet18', pretrained=True,   path='MODELS/', data_transforms=None):
 
-    torch.cuda.empty_cache()
+    th.cuda.empty_cache()
 
     fold_train = train_df[train_df.fold != fold].reset_index(drop=True)
     fold_val = train_df[train_df.fold == fold].reset_index(drop=True)
@@ -105,3 +105,61 @@ def ramp_scheduler(epoch):
         lr = LR_MAX * \
             LR_STEP_DECAY**((epoch - LR_RAMPUP_EPOCHS - LR_SUSTAIN_EPOCHS)//10)
     return lr
+
+
+def load_models(n_folds: int = None, version: int = 0):
+    """
+    Load trained models for inference time
+    """
+    models_list = [m for m in sorted(os.listdir(Config.models_dir)) if m.split(
+        '.')[-1] in ['bin', 'pt', 'pth', 'model']]
+    print("[INFO] Matching models found : \n", models_list)
+    loaded_models = []
+    if n_folds is not None:
+        # n_folds models to load for inference
+        for m_name in tqdm(models_list, desc='Loding models'):
+            if 'fold' in m_name:
+                try:
+                    m = th.jit.load(os.path.join(Config.models_dir, m_name))
+                    loaded_models.append(m)
+                    assert len(loaded_models) == n_folds
+                except Exception as e:
+                    print(f'[ERROR] while loading model : {e}')
+    else:
+        # one model to load usin the version number
+        try:
+            m_name = models_list[-1]
+            # print(m_name)
+            m = th.jit.load(os.path.join(Config.models_dir, m_name))
+            loaded_models.append(m)
+            assert len(loaded_models) == 1
+        except Exception as e:
+            print(f'[ERROR] while loading model : {e}')
+
+    return loaded_models
+
+
+def predict(dataset: DataSet, model: pl.LightningModule, batch_size=16, n_folds=None):
+
+    test_dl = DataLoader(
+        dataset=dataset,
+        batch_size=batch_size,
+        shuffle=False
+    )
+
+    predictions = []
+
+    if n_folds is None:
+        with th.no_grad():
+            model.eval()
+            model.cuda()
+            for data in tqdm(test_dl, desc='Predicting'):
+                ids = data['ids']
+                preds = model(ids.cuda())
+                # as we added 1 to avoid target from being < 0 (Negative sentiment)
+                reformat_pred = preds.argmax(dim=1) - 1
+                predictions += (reformat_pred.detach().cpu().numpy().tolist())
+    else:
+        pass
+
+    return predictions
