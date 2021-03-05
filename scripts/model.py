@@ -474,6 +474,7 @@ class TransformerModel(pl.LightningModule):
         self.tokenizer = tokenizer
         self.sequence_len = sequence_len
         self.d_model = d_model
+        self.embedding_dim = embedding_dim
         self.n_head = n_head
         self.dim_feedforward = dim_feedforward
         self.drop_out_prob = drop_out_prob
@@ -481,11 +482,11 @@ class TransformerModel(pl.LightningModule):
 
         self.src_embedding = nn.Embedding(
             self.tokenizer.vocab_size,
-            input_size
+            self.embedding_dim
         )
         self.src_positional_embedding = nn.Embedding(
             self.sequence_len,
-            input_size
+            self.embedding_dim
         )
 
         self.encoder_layer = nn.TransformerEncoderLayer(
@@ -501,13 +502,13 @@ class TransformerModel(pl.LightningModule):
         )
         self.dropout_layer = nn.Dropout(p=self.drop_out_prob)
         self.fc_out = nn.Linear(
-            in_features=self.dim_feedforward,
+            in_features=self.embedding_dim,
             out_features=Config.n_classes
         )
 
     def create_pad_mask(self, idx_seq, pad_idx):
-        # idx_seq shape: (seq len, batch size)
-        mask = idx_seq.transpose(0, 1) == pad_idx
+        # idx_seq shape: (batch size, seq len)
+        mask = idx_seq == pad_idx
         # mask shape: (batch size, seq len) <- PyTorch transformer wants this shape for mask
         return mask
 
@@ -521,7 +522,7 @@ class TransformerModel(pl.LightningModule):
 
         # Get source pad mask
         src_pad_mask = self.create_pad_mask(idx_seq=src, pad_idx=self.pad_idx)
-
+        print('[INFO] src_pad_mask shape : ', src_pad_mask.shape)
         # Embed src
         src_positions = th.arange(
             start=0,
@@ -540,17 +541,20 @@ class TransformerModel(pl.LightningModule):
         src_embed = self.dropout_layer(src_emb + pos_emb)
         print('[INFO] src_embed shape : ', src_embed.shape)
 
-        try:
-            out = self.transformer(
-                src=src_embed,
-                mask=None,
-                src_key_padding_mask=src_pad_mask
-            )
-        except Exception as e:
-            print(e)
+        out = self.transformer(
+            src=src_embed,
+            mask=None,
+            src_key_padding_mask=src_pad_mask
+        )
+        print('[INFO] out shape : ', out.shape)
+        out = out.transpose(1, 0)[:, 0]
 
+        print('[INFO] h state shape : ', out.shape)
+        out = out.reshape(batch_size, -1)
+
+        print('[INFO] Before fc : ', out.shape)
         out = self.fc_out(out)
-
+        print('[INFO] After fc : ', out.shape)
         return out
 
     def training_step(self, batch, batch_idx):
@@ -717,13 +721,13 @@ if __name__ == "__main__":
                     # )
 
                     print(e)
-                print(logits)
+                # print(logits)
                 preds = th.argmax(input=logits, dim=-1)
                 print("[INFO] Logits : ", logits.shape)
                 print("[INFO] Predictions : ", preds)
 
                 acc = model.get_acc(preds=preds, targets=targets)
-                loss = model.get_loss(preds=logits, targets=targets)
+                loss = model.get_loss(logits=logits, targets=targets)
 
                 print("[INFO] acc : ", acc)
                 print("[INFO] loss : ", loss)

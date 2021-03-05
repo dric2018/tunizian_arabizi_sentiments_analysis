@@ -18,11 +18,11 @@ class Config:
     test_batch_size = 64
     num_epochs = 60
     drop_out_prob = .3
-    d_model = 512
+    d_model = 256
     n_head = 8
     dim_feedforward = 2048
     early_stopping_patience = 5
-    num_layers = 4
-    embedding_dim = 512
+    num_layers = 3
+    embedding_dim = 256
     hidden_size = None  # 350
     lr = 2e-2
