@@ -16,7 +16,7 @@ from utils import load_models, predict
 import argparse
 
 import warnings
-# warnings.filterwarnings(action='ignore')
+warnings.filterwarnings(action='ignore')
 
 parser = argparse.ArgumentParser(prog="Inference time")
 parser.add_argument(

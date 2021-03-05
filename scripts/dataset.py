@@ -41,6 +41,7 @@ class DataSet(Dataset):
             padding='max_length',
             max_length=Config.max_len,
             truncation=True,
+            return_attention_mask=False,
             return_tensors='pt'
         )
         # print(code)
@@ -48,7 +49,7 @@ class DataSet(Dataset):
         sample = {
             'text': str(text),  # image tensor
             'ids': code['input_ids'].clone().detach(),
-            'mask': code['attention_mask'].clone().detach(),
+            # 'mask': code['attention_mask'].clone().detach().float(),
 
         }
 

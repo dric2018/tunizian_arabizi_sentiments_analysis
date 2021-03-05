@@ -107,17 +107,19 @@ def ramp_scheduler(epoch):
     return lr
 
 
-def load_models(n_folds: int = None, version: int = 0):
+def load_models(n_folds: int = None, version: int = 0, arch: str = Config.base_model):
     """
     Load trained models for inference time
     """
     models_list = [m for m in sorted(os.listdir(Config.models_dir)) if m.split(
         '.')[-1] in ['bin', 'pt', 'pth', 'model']]
-    print("[INFO] Matching models found : \n", models_list)
+
+    matching_models = [m for m in models_list if arch in m]
+    print("[INFO] Matching models found : \n", matching_models)
     loaded_models = []
     if n_folds is not None:
         # n_folds models to load for inference
-        for m_name in tqdm(models_list, desc='Loding models'):
+        for m_name in tqdm(matching_models, desc='Loding models'):
             if 'fold' in m_name:
                 try:
                     m = th.jit.load(os.path.join(Config.models_dir, m_name))
@@ -126,9 +128,11 @@ def load_models(n_folds: int = None, version: int = 0):
                 except Exception as e:
                     print(f'[ERROR] while loading model : {e}')
     else:
-        # one model to load usin the version number
+        # one model to load using the version number
         try:
-            m_name = models_list[-1]
+
+            m_name = "".join(
+                [md for md in matching_models if str(version) in md])
             # print(m_name)
             m = th.jit.load(os.path.join(Config.models_dir, m_name))
             loaded_models.append(m)
