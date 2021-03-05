@@ -282,16 +282,16 @@ class Model1(pl.LightningModule):
         """
         # compute embedding
         out = self.embedding(seq.squeeze(1))
-        print('emb shape : ', out.shape)
+        # print('emb shape : ', out.shape)
         # compute init hidden size
         h0 = th.zeros(
             self.hparams.num_layers * 2,  # if bidirectional multiply num_layers by 2
             seq.size(0),
             self.hparams.hidden_size).to(self.device)
-        print('h0 shape : ', h0.shape)
+        # print('h0 shape : ', h0.shape)
         last_hidden_state, _ = self.encoder(out, h0)
         out = last_hidden_state[:, 0]
-        print('encoder out shape : ', out.shape)
+        # print('encoder out shape : ', out.shape)
 
         out = out.reshape(out.shape[0], -1)
 
@@ -301,13 +301,13 @@ class Model1(pl.LightningModule):
         return out
 
     def training_step(self, batch, batch_idx):
-        input_ids, y = batch['ids'].squeeze(1), batch['target'].squeeze(1)
+        input_ids, y = batch['ids'], batch['target']
         # forward pass
-        logits = self(input_ids)
-        preds = nn.LogSoftmax(dim=1)(logits)
+        logits = self(seq=input_ids)
+        preds = th.argmax(input=logits, dim=-1)
 
         # compute metrics
-        loss = th.nn.NLLLoss()(preds, y)
+        loss = self.get_loss(logits=logits, targets=y)
         acc = accuracy(preds.cpu(), y.cpu())
 
         self.log('train_acc',
@@ -340,14 +340,14 @@ class Model1(pl.LightningModule):
                                           self.current_epoch)
 
     def validation_step(self, batch, batch_idx):
-        input_ids, y = batch['ids'].squeeze(1), batch['target'].squeeze(1)
+        input_ids, y = batch['ids'], batch['target']
 
         # forward pass
         logits = self(input_ids)
-        preds = nn.LogSoftmax(dim=1)(logits)
+        preds = th.argmax(input=logits, dim=-1)
 
         # compute metrics
-        val_loss = th.nn.NLLLoss()(preds, y)
+        val_loss = self.get_loss(logits=logits, targets=y)
         val_acc = accuracy(preds.cpu(), y.cpu())
 
         self.log('val_loss',
@@ -393,23 +393,31 @@ class Model1(pl.LightningModule):
             lr=Config.lr
         )
 
-        scheduler = th.optim.lr_scheduler.LambdaLR(
+        scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer=opt,
-            lr_lambda=ramp_scheduler,
-            verbose=True
+            mode='max',
+            factor=0.1,
+            patience=3,
+            threshold=0.0001,
+            threshold_mode='rel',
+            cooldown=0,
+            min_lr=0,
+            eps=1e-08,
+            verbose=True,
         )
-
-        return [opt], [scheduler]
+        return {"optimizer": opt,
+                "lr_scheduler": scheduler,
+                "monitor": "val_acc"}
 
     def get_acc(self, preds, targets):
         preds = preds.cpu()
         targets = targets.cpu()
         return (preds == targets).float().mean()
 
-    def get_loss(self, preds, targets):
-        preds = preds.cpu()
+    def get_loss(self, logits, targets):
+        logits = logits.cpu()
         targets = targets.cpu()
-        return nn.CrossEntropyLoss(weight=self.hparams.class_w)(input=preds, target=targets)
+        return F.cross_entropy(weight=self.hparams.class_w, input=logits, target=targets)
 
 
 if __name__ == "__main__":
@@ -463,7 +471,7 @@ if __name__ == "__main__":
                 print("[INFO] Predictions : ", preds)
 
                 acc = model.get_acc(preds=preds, targets=targets)
-                loss = model.get_loss(preds=preds, targets=targets)
+                loss = model.get_loss(preds=logits, targets=targets)
 
                 print("[INFO] acc : ", acc)
                 print("[INFO] loss : ", loss)
