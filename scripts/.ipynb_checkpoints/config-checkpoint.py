@@ -15,5 +15,8 @@ class Config:
     max_len = 100
     train_batch_size = 512
     test_batch_size = 512
-    num_epochs = 150
-    lr = 2e-4
+    num_epochs = 60
+    drop_out_prob = .25   
+    early_stopping_patience=15
+    num_layers = 3
+    lr = 5e-3
