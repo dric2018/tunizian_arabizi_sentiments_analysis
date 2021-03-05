@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.metrics.functional import accuracy
 
-from transformers import AutoModel
+from transformers import AutoModel, AutoTokenizer
 from transformers import get_linear_schedule_with_warmup
 
 from utils import ramp_scheduler
@@ -151,8 +151,8 @@ class Model(pl.LightningModule):
         loss = self.get_loss(preds=logits, targets=targets)
 
         # accuracy
-        probas = F.sigmoid(input=logits)
-        acc = self.get_acc(preds=probas, targets=targets)
+        preds = th.argmax(input=logits, dim=-1)
+        acc = self.get_acc(preds=preds, targets=targets)
 
         # logging stuff
         self.log('train_acc', acc, on_step=True,
@@ -190,7 +190,7 @@ class Model(pl.LightningModule):
         loss = self.get_loss(preds=logits, targets=targets)
 
         # accuracy
-        preds = logits.argmax(dim=1)
+        preds = th.argmax(input=logits, dim=-1)
         acc = self.get_acc(preds=preds, targets=targets)
 
         # logging stuff
@@ -241,11 +241,183 @@ class Model(pl.LightningModule):
         return (preds == targets).float().mean()
 
 
+class Model1(pl.LightningModule):
+    def __init__(self,
+                 tokenizer,
+                 class_w=None,
+                 input_size=Config.max_len,
+                 sequence_len=Config.max_len,
+                 hidden_size=300,
+                 dropout_prob=.2,
+                 embedding_dim=150,
+                 num_layers=3):
+        super(Model1, self).__init__()
+
+        self.save_hyperparameters()
+
+        self.embedding = nn.Embedding(
+            num_embeddings=self.hparams.tokenizer.vocab_size+1,
+            embedding_dim=self.hparams.sequence_len
+        )
+        self.encoder = nn.GRU(
+            input_size=self.hparams.input_size,
+            hidden_size=self.hparams.hidden_size,
+            num_layers=self.hparams.num_layers,
+            batch_first=True,
+            dropout=self.hparams.dropout_prob,
+            bidirectional=True
+        )
+
+        # create classification layer
+
+        self.classifier = nn.Linear(
+            in_features=2*self.hparams.hidden_size,
+            out_features=Config.n_classes
+        )
+        self.dropout = nn.Dropout(p=self.hparams.dropout_prob)
+
+    def forward(self, seq):
+        """
+        inspired from : https://github.com/aladdinpersson/Machine-Learning-Collection/blob/master/ML/Pytorch/Basics/pytorch_rnn_gru_lstm.py
+        """
+        # compute embedding
+        out = self.embedding(seq.squeeze(1))
+        print('emb shape : ', out.shape)
+        # compute init hidden size
+        h0 = th.zeros(
+            self.hparams.num_layers * 2,  # if bidirectional multiply num_layers by 2
+            seq.size(0),
+            self.hparams.hidden_size).to(self.device)
+        print('h0 shape : ', h0.shape)
+        last_hidden_state, _ = self.encoder(out, h0)
+        out = last_hidden_state[:, 0]
+        print('encoder out shape : ', out.shape)
+
+        out = out.reshape(out.shape[0], -1)
+
+        # print(out.shape)
+        out = self.classifier(out)
+
+        return out
+
+    def training_step(self, batch, batch_idx):
+        input_ids, y = batch['ids'].squeeze(1), batch['target'].squeeze(1)
+        # forward pass
+        logits = self(input_ids)
+        preds = nn.LogSoftmax(dim=1)(logits)
+
+        # compute metrics
+        loss = th.nn.NLLLoss()(preds, y)
+        acc = accuracy(preds.cpu(), y.cpu())
+
+        self.log('train_acc',
+                 acc,
+                 prog_bar=True,
+                 on_step=True,
+                 on_epoch=True)
+
+        return {'loss': loss,
+                'accuracy': acc,
+                "predictions": preds,
+                'targets': y
+                }
+
+    def training_epoch_end(self, outputs):
+        #  the function is called after every epoch is completed
+
+        # calculating average loss
+        avg_loss = th.stack([x['loss'] for x in outputs]).mean()
+        # acc
+        avg_acc = th.stack([x['accuracy'] for x in outputs]).mean()
+
+        # logging using tensorboard logger
+        self.logger.experiment.add_scalar("Loss/Train",
+                                          avg_loss,
+                                          self.current_epoch)
+
+        self.logger.experiment.add_scalar("Accuracy/Train",
+                                          avg_acc,
+                                          self.current_epoch)
+
+    def validation_step(self, batch, batch_idx):
+        input_ids, y = batch['ids'].squeeze(1), batch['target'].squeeze(1)
+
+        # forward pass
+        logits = self(input_ids)
+        preds = nn.LogSoftmax(dim=1)(logits)
+
+        # compute metrics
+        val_loss = th.nn.NLLLoss()(preds, y)
+        val_acc = accuracy(preds.cpu(), y.cpu())
+
+        self.log('val_loss',
+                 val_loss,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True
+                 )
+
+        self.log('val_acc',
+                 val_acc,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True
+                 )
+
+        return {'loss': val_loss,
+                'accuracy': val_acc,
+                "predictions": preds,
+                'targets': y
+                }
+
+    def validation_epoch_end(self, outputs):
+        #  the function is called after every epoch is completed
+
+        # calculating average loss
+        avg_loss = th.stack([x['loss'] for x in outputs]).mean()
+        # acc
+        avg_acc = th.stack([x['accuracy'] for x in outputs]).mean()
+
+        # logging using tensorboard logger
+        self.logger.experiment.add_scalar("Loss/Validation",
+                                          avg_loss,
+                                          self.current_epoch)
+
+        self.logger.experiment.add_scalar("Accuracy/Validation",
+                                          avg_acc,
+                                          self.current_epoch)
+
+    def configure_optimizers(self):
+        opt = th.optim.Adam(
+            params=self.parameters(),
+            lr=Config.lr
+        )
+
+        scheduler = th.optim.lr_scheduler.LambdaLR(
+            optimizer=opt,
+            lr_lambda=ramp_scheduler,
+            verbose=True
+        )
+
+        return [opt], [scheduler]
+
+    def get_acc(self, preds, targets):
+        preds = preds.cpu()
+        targets = targets.cpu()
+        return (preds == targets).float().mean()
+
+    def get_loss(self, preds, targets):
+        preds = preds.cpu()
+        targets = targets.cpu()
+        return nn.CrossEntropyLoss(weight=self.hparams.class_w)(input=preds, target=targets)
+
+
 if __name__ == "__main__":
     print('[INFO] Building model')
+    tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
     try:
-        model = Model(
-            class_w=None
+        model = Model1(
+            tokenizer=tokenizer
         )
 
         print('[INFO] Model built')
@@ -276,17 +448,26 @@ if __name__ == "__main__":
             try:
 
                 print('[INFO] Forward pass')
-                logits = model(
-                    ids=ids,
-                    mask=mask
-                )
+                try:
+                    logits = model(
+                        ids=ids,
+                        mask=mask
+                    )
+                except:
+                    logits = model(
+                        seq=ids
+                    )
                 print(logits)
                 preds = th.argmax(input=logits, dim=-1)
                 print("[INFO] Logits : ", logits.shape)
                 print("[INFO] Predictions : ", preds)
 
                 acc = model.get_acc(preds=preds, targets=targets)
+                loss = model.get_loss(preds=preds, targets=targets)
+
                 print("[INFO] acc : ", acc)
+                print("[INFO] loss : ", loss)
+
             except Exception as e:
                 print(e)
             break

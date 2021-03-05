@@ -13,7 +13,7 @@ class Config:
     base_model = "distilbert-base-multilingual-cased"
     n_classes = 3
     max_len = 100
-    train_batch_size = 4
-    test_batch_size = 4
-    num_epochs = 10
+    train_batch_size = 8
+    test_batch_size = 8
+    num_epochs = 15
     lr = 3e-4
