@@ -32,10 +32,25 @@ Such solutions could be used by banking, insurance companies, or social media in
 
 ### Exp 1 : Bag of words
 
-HashVectorizer + logistic regression
+HashVectorizer + logistic regression (5-folds)
 
 - local score : 0.8001
 - LB score : 0.7726
+
+HashVectorizer + Naive bayes (5-folds)
+
+- local score : 0.78
+- LB score : 0.7404
+
+HashVectorizer + Naive bayes (10-folds)
+
+- local score : 0.78
+- LB score : 0.749733333333333
+
+HashVectorizer + Passive aggressive (5-folds)
+
+- local score : 0.7833857142857144
+- LB score : 0.768133333333333
 
 ### Exp 2 : TF-IDF
 
