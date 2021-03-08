@@ -30,12 +30,70 @@ Such solutions could be used by banking, insurance companies, or social media in
     - Pytorch (version 1.7.1) + Pytorch Lightning (1.2.0)
     - Huggingface transformers/tokenizers
 
-## Approach
+### Exp 1 : Bag of words
+
+HashVectorizer + logistic regression
+
+- local score : 0.8001
+- LB score : 0.7726
+
+### Exp 2 : TF-IDF
+
+- local score : Nan
+- LB score : Nan
+
+### Exp 3 : Reccurents nets
+
+- LSTMs
+
+  - local score : Nan
+  - LB score : Nan
+
+- GRUs
+  - local score : Nan
+  - LB score : Nan
+
+### Exp 4 : Scratch transformers
+
+- local score : Nan
+- LB score : Nan
+
+### Exp 5 : BERT-like transformers:
+
+- Distilbert (english)
+
+  - local score : Nan
+  - LB score : Nan
+
+- Distilbert (french)
+
+  - local score : Nan
+  - LB score : Nan
+
+- Distilbert (multilingual)
+
+  - local score : Nan
+  - LB score : Nan
+
+- Roberta (english)
+
+  - local score : Nan
+  - LB score : Nan
+
+- Bert-base-uncased (english)
+
+  - local score : Nan
+  - LB score : Nan
 
 ## Usage
 
 - Training
 - Inference
+
+## Results
+
+- What worked:
+- What didn't worked:
 
 ## Acknowledgements
 

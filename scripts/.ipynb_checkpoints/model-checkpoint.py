@@ -15,6 +15,7 @@ from utils import ramp_scheduler
 
 import pandas as pd
 import os
+import sys
 from dataset import DataModule
 
 
@@ -433,11 +434,232 @@ class Model1(pl.LightningModule):
         return F.cross_entropy(weight=self.class_w, input=logits, target=targets)
 
 
+class TransformerModel(pl.LightningModule):
+    '''
+        input_size (int): The size of embeddings in the network
+        input_vocab (vocab): The input vocab
+        num_heads (int): The number of heads in the encoder
+        num_layers (int): The number of layers in the transformer encoder
+        forward_expansion (int): The factor of expansion in the elementwise feedforward layer
+        dropout_prob (float): The amount of dropout
+        sequence_len (int): The max sequence length used when a target is not provided
+        device (torch.device): The device that the network will run on
+    Inputs:
+        src (Tensor): The input sequence of shape (src length, batch size)
+    Returns:
+        output (Tensor): probability distribution of predictions
+
+        '''
+
+    def __init__(self,
+                 tokenizer,
+                 class_w=None,
+                 dv: str = 'cuda',
+                 d_model=Config.d_model,
+                 n_head=Config.n_head,
+                 input_size=Config.max_len,
+                 sequence_len=Config.max_len,
+                 dropout_prob=Config.drop_out_prob,
+                 embedding_dim=Config.embedding_dim,
+                 pad_idx=0,
+                 num_layers=Config.num_layers):
+        super(TransformerModel, self).__init__()
+
+        d = dict(Config.__dict__)
+        conf_dict = {k: d[k] for k in d.keys() if '__' not in k}
+        self.save_hyperparameters(conf_dict)
+
+        self.num_layers = num_layers
+        self.tokenizer = tokenizer
+        self.sequence_len = sequence_len
+        self.src_embedding = nn.Embedding(
+            self.tokenizer.get_vocab_size(),
+            input_size
+        )
+        self.src_positional_embedding = nn.Embedding(
+            self.sequence_len,
+            input_size
+        )
+
+        self.encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model,
+            nhead=self.n_head,
+            dim_feedforward=self.dim_feedforward,
+            dropout=self.drop_prob
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer=self.encoder_layer,
+            num_layers=self.num_layers,
+            norm=None
+        )
+        self.dropout_layer = nn.Dropout(dropout)
+        self.fc_out = nn.Linear(
+            in_features=self.dim_feedforward,
+            out_features=Config.n_classes
+        )
+
+    def create_pad_mask(self, idx_seq, pad_idx):
+        # idx_seq shape: (seq len, batch size)
+        mask = idx_seq.transpose(0, 1) == pad_idx
+        # mask shape: (batch size, seq len) <- PyTorch transformer wants this shape for mask
+        return mask
+
+    def forward(self, src, mask=None):
+        batch_size, src_len = src.squeeze(1).shape
+        src = src.squeeze(1)
+
+        print('[INFO] sequence shape : ', src.shape)
+
+        # Get source pad mask
+        src_pad_mask = self.create_pad_mask(src, self.pad_idx)
+
+        # Embed src
+        src_positions = torch.arange(
+            start=0,
+            end=src_len,
+            device=self.device
+        ).unsqueeze(1).expand(src_len, batch_size)
+
+        print('[INFO] src_positions shape : ', src_positions.shape)
+
+        src_embed = self.dropout(
+            self.src_embedding(
+                src) + self.src_positional_embedding(src_positions)
+        )
+
+        out = self.transformer(
+            src=src_embed,
+            mask=None,
+            src_key_padding_mask=src_pad_mask
+        )
+        out = self.fc_out(out)
+
+        return out
+
+    def training_step(self, batch, batch_idx):
+        input_ids, y = batch['ids'], batch['target']
+        # forward pass
+        logits = self(src=input_ids, mask=masks)
+        preds = th.argmax(input=logits, dim=-1)
+
+        # compute metrics
+        loss = self.get_loss(logits=logits, targets=y)
+        acc = accuracy(preds.cpu(), y.cpu())
+
+        self.log('train_acc',
+                 acc,
+                 prog_bar=True,
+                 on_step=True,
+                 on_epoch=True)
+
+        return {'loss': loss,
+                'accuracy': acc,
+                "predictions": preds,
+                'targets': y
+                }
+
+    def training_epoch_end(self, outputs):
+        #  the function is called after every epoch is completed
+
+        # calculating average loss
+        avg_loss = th.stack([x['loss'] for x in outputs]).mean()
+        # acc
+        avg_acc = th.stack([x['accuracy'] for x in outputs]).mean()
+
+        # logging using tensorboard logger
+        self.logger.experiment.add_scalar("Loss/Train",
+                                          avg_loss,
+                                          self.current_epoch)
+
+        self.logger.experiment.add_scalar("Accuracy/Train",
+                                          avg_acc,
+                                          self.current_epoch)
+
+    def validation_step(self, batch, batch_idx):
+        input_ids, y = batch['ids'], batch['target']
+        # forward pass
+        logits = self(src=input_ids, mask=masks)
+        preds = th.argmax(input=logits, dim=-1)
+
+        # compute metrics
+        val_loss = self.get_loss(logits=logits, targets=y)
+        val_acc = accuracy(preds.cpu(), y.cpu())
+
+        self.log('val_loss',
+                 val_loss,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True
+                 )
+
+        self.log('val_acc',
+                 val_acc,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True
+                 )
+
+        return {'loss': val_loss,
+                'accuracy': val_acc,
+                "predictions": preds,
+                'targets': y
+                }
+
+    def validation_epoch_end(self, outputs):
+        #  the function is called after every epoch is completed
+
+        # calculating average loss
+        avg_loss = th.stack([x['loss'] for x in outputs]).mean()
+        # acc
+        avg_acc = th.stack([x['accuracy'] for x in outputs]).mean()
+
+        # logging using tensorboard logger
+        self.logger.experiment.add_scalar("Loss/Validation",
+                                          avg_loss,
+                                          self.current_epoch)
+
+        self.logger.experiment.add_scalar("Accuracy/Validation",
+                                          avg_acc,
+                                          self.current_epoch)
+
+    def configure_optimizers(self):
+        opt = th.optim.Adam(
+            params=self.parameters(),
+            lr=Config.lr
+        )
+
+        scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=opt,
+            mode='max',
+            factor=0.01,
+            patience=10,
+            threshold=0.0001,
+            threshold_mode='rel',
+            cooldown=0,
+            min_lr=0,
+            eps=1e-8,
+            verbose=True,
+        )
+        return {"optimizer": opt,
+                "lr_scheduler": scheduler,
+                "monitor": "val_acc"}
+
+    def get_acc(self, preds, targets):
+        preds = preds.cpu()
+        targets = targets.cpu()
+        return (preds == targets).float().mean()
+
+    def get_loss(self, logits, targets):
+        logits = logits.cpu()
+        targets = targets.cpu()
+        return F.cross_entropy(weight=self.class_w, input=logits, target=targets)
+
+
 if __name__ == "__main__":
     print('[INFO] Building model')
     tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
     try:
-        model = Model1(
+        model = TransformerModel(
             tokenizer=tokenizer
         )
 
@@ -447,7 +669,7 @@ if __name__ == "__main__":
         print('[INFO] Loading some data')
         print("[INFO] Reading dataframe")
         train_df = pd.read_csv(os.path.join(
-            Config.data_dir, 'Train.csv'), nrows=1000)
+            Config.data_dir, 'Train.csv'), nrows=10000)
 
         print("[INFO] Building data module")
         dm = DataModule(
@@ -471,13 +693,15 @@ if __name__ == "__main__":
                 print('[INFO] Forward pass')
                 try:
                     logits = model(
-                        ids=ids,
+                        src=ids,
                         mask=mask
                     )
-                except:
-                    logits = model(
-                        seq=ids
-                    )
+                except Exception as e:
+                    # logits = model(
+                    #     seq=ids
+                    # )
+
+                    print(e)
                 print(logits)
                 preds = th.argmax(input=logits, dim=-1)
                 print("[INFO] Logits : ", logits.shape)

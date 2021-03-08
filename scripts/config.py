@@ -10,19 +10,19 @@ class Config:
     n_folds = None
     stratified = None
     seed_value = 2021
-    # 'bert-base-multilingual-uncased'  #  xlm-roberta-base # distilbert-base-multilangual-cased
-    base_model = "bert-base-multilingual-uncased"
+    # 'bert-base-multilingual-uncased'  #  xlm-roberta-base # distilbert-base-multilingual-cased
+    base_model = "distilbert-base-multilingual-cased"
     n_classes = 3
     max_len = 100
-    train_batch_size = 64
-    test_batch_size = 64
-    num_epochs = 60
+    train_batch_size = 256
+    test_batch_size = 256
+    num_epochs = 50
     drop_out_prob = .3
-    d_model = 256
+    d_model = 128
     n_head = 8
     dim_feedforward = 2048
-    early_stopping_patience = 5
-    num_layers = 3
-    embedding_dim = 256
-    hidden_size = None  # 350
-    lr = 2e-2
+    early_stopping_patience = 15
+    num_layers = 4
+    embedding_dim = 500
+    hidden_size = 350  # 350
+    lr = 5e-3

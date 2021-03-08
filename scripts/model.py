@@ -402,7 +402,7 @@ class Model1(pl.LightningModule):
                                           self.current_epoch)
 
     def configure_optimizers(self):
-        opt = th.optim.Adam(
+        opt = th.optim.SGD(
             params=self.parameters(),
             lr=Config.lr
         )
@@ -448,7 +448,6 @@ class TransformerModel(pl.LightningModule):
         src (Tensor): The input sequence of shape (src length, batch size)
     Returns:
         output (Tensor): probability distribution of predictions
-
         '''
 
     def __init__(self,
@@ -479,6 +478,8 @@ class TransformerModel(pl.LightningModule):
         self.dim_feedforward = dim_feedforward
         self.drop_out_prob = drop_out_prob
         self.pad_idx = self.tokenizer.pad_token_id
+        self.class_w = class_w
+        self.dv = 'cuda'
 
         self.src_embedding = nn.Embedding(
             self.tokenizer.vocab_size,
@@ -506,61 +507,61 @@ class TransformerModel(pl.LightningModule):
             out_features=Config.n_classes
         )
 
-    def create_pad_mask(self, idx_seq, pad_idx):
+    def create_pad_mask(self, idx_seq: th.Tensor, pad_idx: int):
         # idx_seq shape: (batch size, seq len)
         mask = idx_seq == pad_idx
         # mask shape: (batch size, seq len) <- PyTorch transformer wants this shape for mask
         return mask
 
-    def forward(self, src, mask=None):
+    def forward(self, src):
         src = src.squeeze(1)
 
         batch_size, src_len = src.shape
         src = src.squeeze(1)
 
-        print('[INFO] sequence shape : ', src.shape)
+        # print('[INFO] sequence shape : ', src.shape)
 
         # Get source pad mask
         src_pad_mask = self.create_pad_mask(idx_seq=src, pad_idx=self.pad_idx)
-        print('[INFO] src_pad_mask shape : ', src_pad_mask.shape)
+        # print('[INFO] src_pad_mask shape : ', src_pad_mask.shape)
         # Embed src
         src_positions = th.arange(
             start=0,
             end=src_len,
-            device=self.device
+            device=self.dv
         ).unsqueeze(1).expand(src_len, batch_size)
 
-        print('[INFO] src_positions shape : ', src_positions.shape)
+        # print('[INFO] src_positions shape : ', src_positions.shape)
 
         src_emb = self.src_embedding(src).transpose(1, 0)
-        print('[INFO] src_emb shape : ', src_emb.shape)
+        # print('[INFO] src_emb shape : ', src_emb.shape)
 
         pos_emb = self.src_positional_embedding(src_positions)
-        print('[INFO] pos_emb shape : ', pos_emb.shape)
+        # print('[INFO] pos_emb shape : ', pos_emb.shape)
 
         src_embed = self.dropout_layer(src_emb + pos_emb)
-        print('[INFO] src_embed shape : ', src_embed.shape)
+        # print('[INFO] src_embed shape : ', src_embed.shape)
 
         out = self.transformer(
             src=src_embed,
             mask=None,
             src_key_padding_mask=src_pad_mask
         )
-        print('[INFO] out shape : ', out.shape)
+        # print('[INFO] out shape : ', out.shape)
         out = out.transpose(1, 0)[:, 0]
 
-        print('[INFO] h state shape : ', out.shape)
+        # print('[INFO] h state shape : ', out.shape)
         out = out.reshape(batch_size, -1)
 
-        print('[INFO] Before fc : ', out.shape)
+        # print('[INFO] Before fc : ', out.shape)
         out = self.fc_out(out)
-        print('[INFO] After fc : ', out.shape)
-        return out
+        # print('[INFO] After fc : ', out.shape)
+        return F.sigmoid(input=out)
 
     def training_step(self, batch, batch_idx):
-        input_ids, masks, y = batch['ids'], batch['target']
+        input_ids, y = batch['ids'], batch['target']
         # forward pass
-        logits = self(src=input_ids, mask=masks)
+        logits = self(src=input_ids)
         preds = th.argmax(input=logits, dim=-1)
 
         # compute metrics
@@ -597,9 +598,9 @@ class TransformerModel(pl.LightningModule):
                                           self.current_epoch)
 
     def validation_step(self, batch, batch_idx):
-        input_ids, masks, y = batch['ids'], batch['target']
+        input_ids, y = batch['ids'], batch['target']
         # forward pass
-        logits = self(src=input_ids, mask=masks)
+        logits = self(src=input_ids)
         preds = th.argmax(input=logits, dim=-1)
 
         # compute metrics
@@ -704,8 +705,9 @@ if __name__ == "__main__":
         dm.setup()
 
         for batch in dm.val_dataloader():
-            ids, targets = batch['ids'], batch['target']
+            ids, mask, targets = batch['ids'], batch['mask'], batch['target']
             print('[INFO] input_ids shape :', ids.shape)
+            print('[INFO] Attention mask shape :', mask.shape)
             print('[INFO] Targets shape :', targets.shape)
 
             try:
@@ -714,6 +716,7 @@ if __name__ == "__main__":
                 try:
                     logits = model(
                         src=ids,
+                        mask=mask
                     )
                 except Exception as e:
                     # logits = model(
@@ -721,13 +724,13 @@ if __name__ == "__main__":
                     # )
 
                     print(e)
-                # print(logits)
+                print(logits)
                 preds = th.argmax(input=logits, dim=-1)
                 print("[INFO] Logits : ", logits.shape)
                 print("[INFO] Predictions : ", preds)
 
                 acc = model.get_acc(preds=preds, targets=targets)
-                loss = model.get_loss(logits=logits, targets=targets)
+                loss = model.get_loss(preds=logits, targets=targets)
 
                 print("[INFO] acc : ", acc)
                 print("[INFO] loss : ", loss)
