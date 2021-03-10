@@ -22,6 +22,8 @@ from dataset import DataSet
 import matplotlib.pyplot as plt
 import seaborn as sb
 
+import io
+
 from typing import Union
 
 # learning rate schedule params
@@ -31,13 +33,24 @@ LR_RAMPUP_EPOCHS = 5
 LR_SUSTAIN_EPOCHS = 0
 LR_STEP_DECAY = 0.75
 
-def remove_repetitions(sequence:str, n_repetitions:int=3):
+
+def load_vectors(fname):
+    with open(fname, 'r', encoding='utf-8', newline='\n', errors='ignore') as fin:
+        n, d = map(int, fin.readline().split())
+        data = {}
+        for line in tqdm(fin, desc='loading vectors'):
+            tokens = line.rstrip().split(' ')
+            data[tokens[0]] = map(float, tokens[1:])
+    return data
+
+
+def remove_repetitions(sequence: str, n_repetitions: int = 3):
     """
     Clean text by removing most repetitive letters 
-    
+
     :params sequence (str) : the strig text/sequence to clean
     :params n_repetitions (str) : number of repetitions accepted
-    
+
     : returns (str) cleaned text
 
     """
@@ -46,68 +59,71 @@ def remove_repetitions(sequence:str, n_repetitions:int=3):
     for word in words:
         for letter in word:
             letter_count = word.count(letter)
-            if letter_count >n_repetitions:
+            if letter_count > n_repetitions:
                 try:
                     int(word)
                     float(word)
                 except ValueError:
-                    word = word.replace(letter*letter_count, letter*n_repetitions)
+                    word = word.replace(letter*letter_count,
+                                        letter*n_repetitions)
 
         text.append(word)
 
     return ' '.join(text)
 
 
-
-def replace_accents(text:str):
+def replace_accents(text: str):
     """
         Replace accentuated letters with their corresponding non-accentuated letters
         :params text (str): text to clean
-        
+
         : returns (str) cleaned text
     """
-    
+
     accents_map = {
         "à": 'a',
-        "â" : "a",
-        "é" : "e",
-        "è" : "e",
-        "ë" : "e", 
-        'ê' : 'e', 
-        'ô' : 'o',
-        "ç" : 'c',
-        "î" : "i", 
-        "ï" : "i",     
-        "û" : "u",
-        "ù" : "u", 
-        "ü" : "u",
+        "â": "a",
+        "é": "e",
+        "è": "e",
+        "ë": "e",
+        'ê': 'e',
+        'ô': 'o',
+        "ç": 'c',
+        "î": "i",
+        "ï": "i",
+        "û": "u",
+        "ù": "u",
+        "ü": "u",
 
     }
     # convert to lowercase
     text = text.lower()
-    
+
     # replace accentuated letters
     for letter in accents_map.keys():
         text = text.replace(letter, accents_map[letter])
-            
-        
-        
+
     return text
 
-def delete_outliers(data:pd.DataFrame):
-    
-    max_len_txts = [i for i, txt in enumerate(data.text.tolist()) if (len(txt) >512 or len(txt) < 10) ]
+
+def delete_outliers(data: pd.DataFrame):
+
+    max_len_txts = [i for i, txt in enumerate(
+        data.text.tolist()) if (len(txt) > 512 or len(txt) < 10)]
     data.drop(max_len_txts, axis=0, inplace=True)
 
     return data
 
-def show_lengths_distribution(data:pd.DataFrame):  
-    interval = np.linspace(start=0, stop=len(data)-1, num=len(data), dtype=np.int32)
+
+def show_lengths_distribution(data: pd.DataFrame):
+    interval = np.linspace(start=0, stop=len(
+        data)-1, num=len(data), dtype=np.int32)
     text_lengths = data.text.map(lambda x: len(x)).tolist()
     plt.figure(figsize=(18, 6))
     plt.plot(interval, text_lengths)
     plt.title('Text lengths distribution', size=16)
     plt.show()
+
 
 def make_folds(data: pd.DataFrame, args: Union[argparse.Namespace, type], target_col='label', stratified: bool = True):
     data['fold'] = 0
