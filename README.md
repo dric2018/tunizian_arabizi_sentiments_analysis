@@ -52,12 +52,17 @@ HashVectorizer + Passive aggressive (5-folds)
 - local score : 0.7833857142857144
 - LB score : 0.768133333333333
 
-### Exp 2 : TF-IDF
+TfIdfVectorizer + logistic regression (5-folds)
 
-- local score : Nan
-- LB score : Nan
+- local score : 0.8005285714285714
+- LB score : 0.651266666666667
 
-### Exp 3 : Reccurents nets
+TfIdfVectorizer + Naive Bayes (5-folds)
+
+- local score : 0.8117285714285714
+- LB score : 0.5828
+
+### Exp 2 : Reccurents nets
 
 - LSTMs
 
@@ -68,12 +73,12 @@ HashVectorizer + Passive aggressive (5-folds)
   - local score : Nan
   - LB score : Nan
 
-### Exp 4 : Scratch transformers
+### Exp 3 : Scratch transformers
 
 - local score : Nan
 - LB score : Nan
 
-### Exp 5 : BERT-like transformers:
+### Exp 4 : BERT-like transformers:
 
 - Distilbert (english)
 
