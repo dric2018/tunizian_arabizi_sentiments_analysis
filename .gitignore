@@ -4,3 +4,7 @@ submissions/
 data/
 notebooks/.ipynb_checkpoints/
 .vscode/
+scripts/*.pt
+scripts/*.bin
+scripts/*.pth
+

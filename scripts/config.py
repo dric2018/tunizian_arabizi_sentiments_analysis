@@ -17,7 +17,7 @@ class Config:
     train_batch_size = 512
     test_batch_size = 256
     test_size = .15
-    num_epochs = 10  # 30
+    num_epochs = 15  # 30
     weight_decay = .01
     eps = 1e-8
     drop_out_prob = .15
