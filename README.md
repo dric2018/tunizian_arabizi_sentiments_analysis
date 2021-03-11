@@ -30,6 +30,17 @@ Such solutions could be used by banking, insurance companies, or social media in
     - Pytorch (version 1.7.1) + Pytorch Lightning (1.2.0)
     - Huggingface transformers/tokenizers
 
+## The scoring metric is **Accuracy**
+
+```latex
+\begin{equation}
+  Accuracy = \frac{ number of correct predictions }{ total number of samples }
+\end{equation}
+
+```
+
+(number of correct samples / number total samples) .
+
 ### Exp 1 : Bag of words
 
 HashVectorizer + logistic regression (5-folds)
@@ -79,7 +90,7 @@ TfIdfVectorizer + Naive Bayes (5-folds)
   - local score : Nan
   - LB score : NAN
 
-- unfreeze camembert-base embeddings + 2 layers LSTM
+- unfreeze camembert-base embeddings + 2 layers LSTM + 5 folds
 
   - local score : Nan
   - LB score : NAN

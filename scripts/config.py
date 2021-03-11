@@ -11,21 +11,18 @@ class Config:
     stratified = True
     seed_value = 2021
     # 'bert-base-multilingual-uncased'  #  xlm-roberta-base # distilbert-base-multilingual-cased # camembert-base # distilbert-base-uncased
-    base_model = "distilbert-base-uncased"
+    base_model = "camembert-base"
     n_classes = 3
     max_len = 150
     train_batch_size = 512
     test_batch_size = 256
-    test_size = .15
+    test_size = .2
     num_epochs = 15  # 30
-    weight_decay = .01
+    weight_decay = .001
     eps = 1e-8
-    drop_out_prob = .15
-    d_model = 256
-    n_head = 8
-    dim_feedforward = 2048
+    drop_out_prob = .2
     early_stopping_patience = 5
     num_layers = 3
-    embedding_dim = 150
-    hidden_size = 256  # 350
+    embedding_dim = 200
+    hidden_size = 300  # 350
     lr = 3e-3
