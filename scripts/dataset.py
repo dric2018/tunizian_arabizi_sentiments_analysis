@@ -41,7 +41,7 @@ class DataSet(Dataset):
             padding='max_length',
             max_length=Config.max_len,
             truncation=True,
-            return_attention_mask=False,
+            return_attention_mask=True,
             return_tensors='pt'
         )
         # print(code)
@@ -49,14 +49,16 @@ class DataSet(Dataset):
         sample = {
             'text': str(text),  # image tensor
             'ids': code['input_ids'].clone().detach(),
-            # 'mask': code['attention_mask'].clone().detach().float(),
+            'mask': code['attention_mask'].clone().detach().float(),
 
         }
 
         if self.task == 'train':
+            # put the targets in the range [0..2]
             target = self.df.iloc[index].label + 1
             sample.update({
-                'target': th.tensor(target, dtype=th.long)
+                # use one-hot representation
+                'target': th.eye(n=Config.n_classes)[target].view(1, -1)
             })
 
         return sample
@@ -137,4 +139,4 @@ if __name__ == '__main__':
     print('[INFO] Setting data module up')
     dm.setup()
 
-    # print(dm.train_ds[4])
+    print(dm.train_ds[4])

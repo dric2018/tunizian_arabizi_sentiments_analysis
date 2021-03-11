@@ -55,6 +55,13 @@ parser.add_argument(
     help="Test dataloader batch size"
 )
 
+parser.add_argument(
+    '--version',
+    "-v", type=int,
+    required=False,
+    help="Version of experiment to use"
+)
+
 if __name__ == "__main__":
     args = parser.parse_args()
 
@@ -70,33 +77,40 @@ if __name__ == "__main__":
     # print(ex)
 
     print('[INFO] Loading model(s)')
-    last_version = int(sorted(os.listdir(os.path.join(
-        Config.logs_dir, 'zindi-arabizi')))[-1].split('_')[-1])
+    try:
+        last_version = args.version
+    except:
+        last_version = int(sorted(os.listdir(os.path.join(
+            Config.logs_dir, 'zindi-arabizi')))[-1].split('_')[-1])
 
+    print(f'[INFO] Version : {last_version}')
     loaded_models = load_models(n_folds=args.n_folds, version=last_version)
 
     # print(loaded_models)
     print('[INFO] Making predictions')
-    for m in loaded_models:
-        predictions = predict(
-            dataset=test_ds,
-            model=m,
-            batch_size=args.batch_size
+    try:
+        for m in loaded_models:
+            predictions = predict(
+                dataset=test_ds,
+                model=m,
+                batch_size=args.batch_size
+            )
+
+        print('[INFO] Saving submission file')
+        submission_df = pd.DataFrame({
+            'ID': test_ds.text_ids,
+            'label': predictions
+        })
+
+        fname = f'version-{last_version}-{Config.base_model}-epochs-{Config.num_epochs}.csv'
+        submission_df.to_csv(
+            os.path.join(Config.submissions_dir, fname),
+            index=False
         )
 
-    print('[INFO] Saving submission file')
-    submission_df = pd.DataFrame({
-        'ID': test_ds.text_ids,
-        'label': predictions
-    })
+        print('[INFO] Showing submission file head')
+        print(submission_df.head())
 
-    fname = f'version-{last_version}-{Config.base_model}-epochs-{Config.num_epochs}.csv'
-    submission_df.to_csv(
-        os.path.join(Config.submissions_dir, fname),
-        index=False
-    )
-
-    print('[INFO] Showing submission file head')
-    print(submission_df.head())
-
-    print(f'[INFO] Ssubmission file saved as {fname}')
+        print(f'[INFO] Ssubmission file saved as {fname}')
+    except Exception as e:
+        print(f'[ERROR] While predicting in inference.py {e}')

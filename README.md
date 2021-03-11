@@ -64,19 +64,25 @@ TfIdfVectorizer + Naive Bayes (5-folds)
 
 ### Exp 2 : Reccurents nets
 
-- LSTMs
+- Freeze Camembert-base embeddings + 2 layers LSTM
+
+  - local score : 0.80975
+  - LB score : 0.793333333333333
+
+- Freeze Camembert-base embeddings + 2 layers GRu
+
+  - local score : 0.80630
+  - LB score : 0.784933333333333
+
+- unfreeze Roberta-base embeddings + 2 layers LSTM
 
   - local score : Nan
-  - LB score : Nan
+  - LB score : NAN
 
-- GRUs
+- unfreeze camembert-base embeddings + 2 layers LSTM
+
   - local score : Nan
-  - LB score : Nan
-
-### Exp 3 : Scratch transformers
-
-- local score : Nan
-- LB score : Nan
+  - LB score : NAN
 
 ### Exp 4 : BERT-like transformers:
 

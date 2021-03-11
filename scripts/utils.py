@@ -1,4 +1,6 @@
 import os
+import time
+import gc
 
 import torch as th
 import torch.nn as nn
@@ -6,7 +8,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import pytorch_lightning as pl
-from pytorch_lightning import Trainer, loggers
+from pytorch_lightning import seed_everything, Trainer
+
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, GPUStatsMonitor
+from pytorch_lightning.loggers import TensorBoardLogger
 
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 import numpy as np
@@ -18,6 +23,7 @@ from tqdm.auto import tqdm
 
 from config import Config
 from dataset import DataSet
+import models
 
 import matplotlib.pyplot as plt
 import seaborn as sb
@@ -25,6 +31,9 @@ import seaborn as sb
 import io
 
 from typing import Union
+
+import re
+
 
 # learning rate schedule params
 LR_START = 1e-5
@@ -127,7 +136,12 @@ def show_lengths_distribution(data: pd.DataFrame):
 
 def make_folds(data: pd.DataFrame, args: Union[argparse.Namespace, type], target_col='label', stratified: bool = True):
     data['fold'] = 0
-
+    # apply some cleaning
+    data.text = data['text'].apply(
+        lambda txt: replace_accents(
+            remove_repetitions(sequence=txt, n_repetitions=3)
+        )
+    )
     if stratified:
         fold = StratifiedKFold(
             n_splits=args.n_folds,
@@ -147,52 +161,128 @@ def make_folds(data: pd.DataFrame, args: Union[argparse.Namespace, type], target
     return data, args.n_folds
 
 
-def run_fold(fold, train_df, args, size=(224, 224), arch='resnet18', pretrained=True,   path='MODELS/', data_transforms=None):
+def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
+    start = time.time()
 
-    th.cuda.empty_cache()
+    accs = []
+    for fold_num in range(n_folds):
 
-    fold_train = train_df[train_df.fold != fold].reset_index(drop=True)
-    fold_val = train_df[train_df.fold == fold].reset_index(drop=True)
+        # th.cuda.empty_cache()
+        # get splits
+        train_df = df[df.fold != fold_num].reset_index(drop=True)
+        val_df = df[df.fold == fold_num].reset_index(drop=True)
 
-    train_ds = DataSet(images_path=args.specs_images_path,
-                       df=fold_train, transforms=data_transforms['train'])
-    val_ds = DataSet(images_path=args.specs_images_path,
-                     df=fold_val, transforms=data_transforms['train'])
+        # get datasets
+        print('[INFO] Setting datasets up')
+        train_ds = DataSet(df=train_df)
+        val_ds = DataSet(df=val_df)
+        train_dl = DataLoader(dataset=train_ds,
+                              batch_size=Config.train_batch_size,
+                              shuffle=True,
+                              num_workers=os.cpu_count())
 
-    trainloader = DataLoader(
-        train_ds, batch_size=args.train_batch_size, shuffle=True, num_workers=os.cpu_count())
-    validloader = DataLoader(
-        val_ds, batch_size=args.test_batch_size, shuffle=False, num_workers=os.cpu_count())
+        val_dl = DataLoader(dataset=val_ds,
+                            batch_size=Config.test_batch_size,
+                            shuffle=False,
+                            num_workers=os.cpu_count())
 
-    del train_ds
-    del val_ds
-    del fold_train
-    del fold_val
+        # build model
+        print('[INFO] Building model')
 
-    model = AudioClassifier(arch_name=arch, lr=args.lr, pretrained=pretrained)
+        if args.model_type.lower() == 'lstm':
+            model = models.LSTMModel()
+        elif args.model_type.lower() == 'gru':
+            model = models.GRUModel()
+        else:
+            model = models.BertBaseModel()
 
-    tb_logger = loggers.TensorBoardLogger(
-        save_dir='./runs', name='ZINDI-GIZ-NLP-AGRI-KEYWORDS', version=fold)
+        # config training pipeline
+        print('[INFO] Callbacks and loggers configuration')
+        ckpt_cb = ModelCheckpoint(
+            monitor='val_acc',
+            mode='max',
+            dirpath=Config.models_dir,
+            filename=f'{Config.base_model}-{args.model_type}' +
+            "-arabizi-{val_acc:.5f}-{val_loss:.5f}-{fold_num}"
+        )
 
-    ckpt_callback = pl.callbacks.ModelCheckpoint(filename=f'ZINDI-GIZ-NLP-AGRI-KEYWORDS-{model.hparams.arch_name}-{fold}-based',
-                                                 dirpath=path,
-                                                 monitor='val_logLoss',
-                                                 mode='min')
+        gpu_stats = GPUStatsMonitor(
+            memory_utilization=True,
+            gpu_utilization=True,
+            fan_speed=True,
+            temperature=True
+        )
+        es = EarlyStopping(
+            monitor='val_acc',
+            patience=Config.early_stopping_patience,
+            mode='max'
+        )
 
-    trainer = Trainer(max_epochs=args.num_epochs, gpus=args.gpus,
-                      logger=tb_logger, callbacks=[ckpt_callback])
+        Logger = TensorBoardLogger(
+            save_dir=Config.logs_dir,
+            name='zindi-arabizi',
+            version=version
+        )
 
-    trainer.fit(model, trainloader, validloader)
+        cbs = [es, ckpt_cb, gpu_stats]
+
+        # build trainer
+        print('[INFO] Building trainer')
+        trainer = Trainer(
+            gpus=1,
+            precision=32,
+            max_epochs=Config.num_epochs,
+            callbacks=cbs,
+            logger=Logger,
+            deterministic=True
+            # fast_dev_run=True
+        )
+
+        print(f'[INFO] Runing experiment N° {version}')
+        # train/eval/save model(s)
+        print(
+            f'[INFO] (split {fold_num}) Training model for {Config.num_epochs} epochs'
+        )
+        trainer.fit(
+            model=model,
+            train_dataloader=train_dl,
+            val_dataloaders=val_dl
+        )
+
+        # append best acc
+        best_acc = model.best_acc.cpu().item()
+        accs.append(model.best_acc.cpu().item())
+
+        print(f'[INFO] Saving model for inference')
+        try:
+            fn = f'arabizi-sentiments-{Config.base_model}-version-{version}-fold-{fold_num}.bin'
+            th.jit.save(
+                model.to_torchscript(),
+                os.path.join(
+                    Config.models_dir,
+                    fn
+                )
+            )
+            print(f'[INFO] Model saved as {fn}')
+            print(f'[INFO] Split {fold_num} : Best accuracy = {best_acc}')
+            print()
+        except Exception as e:
+            print("[ERROR]", e)
+
+    avg_acc = np.array(accs).mean()
+    print(f'[INFO] Mean accuracy = {avg_acc}')
+    end = time.time()
+
+    duration = (end - start) / 60
+    print(f'[INFO] Training time : {duration} mn')
 
     gc.collect()  # collect garbage
-
-    return trainer.logged_metrics
-
 
 # CUSTOM LEARNING SCHEUDLE
 # """
 # from https://www.kaggle.com/cdeotte/how-to-compete-with-gpus-workshop#STEP-4:-Training-Schedule
 # """
+
 
 def ramp_scheduler(epoch):
     if epoch < LR_RAMPUP_EPOCHS:
@@ -230,7 +320,8 @@ def load_models(n_folds: int = None, version: int = 0, arch: str = Config.base_m
         try:
 
             m_name = "".join(
-                [md for md in matching_models if str(version) in md])
+                [md for md in matching_models if str(version) in md]
+            )
             # print(m_name)
             m = th.jit.load(os.path.join(Config.models_dir, m_name))
             loaded_models.append(m)
@@ -257,11 +348,54 @@ def predict(dataset: DataSet, model: pl.LightningModule, batch_size=16, n_folds=
             model.cuda()
             for data in tqdm(test_dl, desc='Predicting'):
                 ids = data['ids']
-                preds = model(ids.cuda())
+                logits = model(ids.cuda())
                 # as we added 1 to avoid target from being < 0 (Negative sentiment)
-                reformat_pred = preds.argmax(dim=1) - 1
+                reformat_pred = logits.argmax(dim=1) - 1
                 predictions += (reformat_pred.detach().cpu().numpy().tolist())
     else:
         pass
 
     return predictions
+
+
+def atoi(text):
+    # from  https://stackoverflow.com/questions/5967500/how-to-correctly-sort-a-string-with-a-number-inside#5967539
+    return int(text) if text.isdigit() else text
+
+
+def natural_keys(text):
+    # from  https://stackoverflow.com/questions/5967500/how-to-correctly-sort-a-string-with-a-number-inside#5967539
+    '''
+    alist.sort(key=natural_keys) sorts in human order
+    http://nedbatchelder.com/blog/200712/human_sorting.html
+    (See Toothy's implementation in the comments)
+    '''
+    return [atoi(c) for c in re.split(r'(\d+)', text)]
+
+
+def save_experiment_conf():
+
+    walk = [folder for folder in os.listdir(os.path.join(
+        Config.logs_dir, 'zindi-arabizi')) if len(folder.split('.')) <= 1]
+
+    # sort the versions list
+    walk.sort(key=natural_keys)
+
+    if len(walk) > 0:
+        version = int(walk[-1].split('_')[-1]) + 1
+    else:
+        version = 0
+
+    # save experiment config
+
+    with open(os.path.join(Config.logs_dir, 'zindi-arabizi', f'conf-exp-{version}.txt'), 'w') as conf:
+        conf.write(
+            f'================== Config file version {version} ===================\n\n')
+        d = dict(Config.__dict__)
+        conf_dict = {k: d[k] for k in d.keys() if '__' not in k}
+
+        for k in conf_dict:
+            v = conf_dict[k]
+            conf.write(f'{k} : {v}\n')
+
+    return version
