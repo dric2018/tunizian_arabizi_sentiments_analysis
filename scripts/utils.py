@@ -36,11 +36,26 @@ import re
 
 
 # learning rate schedule params
-LR_START = 1e-5
-LR_MAX = 1e-3
+LR_START = Config.lr
+LR_MAX = Config.lr/.1
 LR_RAMPUP_EPOCHS = 5
 LR_SUSTAIN_EPOCHS = 0
-LR_STEP_DECAY = 0.75
+LR_STEP_DECAY = 0.65
+# CUSTOM LEARNING SCHEUDLE
+# """
+# from https://www.kaggle.com/cdeotte/how-to-compete-with-gpus-workshop#STEP-4:-Training-Schedule
+# """
+
+
+def ramp_scheduler(epoch):
+    if epoch < LR_RAMPUP_EPOCHS:
+        lr = (LR_MAX - LR_START) / LR_RAMPUP_EPOCHS * epoch + LR_START
+    elif epoch < LR_RAMPUP_EPOCHS + LR_SUSTAIN_EPOCHS:
+        lr = LR_MAX
+    else:
+        lr = LR_MAX * \
+            LR_STEP_DECAY**((epoch - LR_RAMPUP_EPOCHS - LR_SUSTAIN_EPOCHS)//10)
+    return lr
 
 
 def load_vectors(fname):
@@ -201,8 +216,8 @@ def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
         ckpt_cb = ModelCheckpoint(
             monitor='val_acc',
             mode='max',
-            dirpath=Config.models_dir,
-            filename=f'{Config.base_model}-{args.model_type}' +
+            dirpath=Config.models_dir+'/kfolds',
+            filename=f'{Config.base_model}-{args.model_type}-version-{version}' +
             "-arabizi-{val_acc:.5f}-{val_loss:.5f}-{fold_num}"
         )
 
@@ -221,7 +236,7 @@ def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
         Logger = TensorBoardLogger(
             save_dir=Config.logs_dir,
             name='zindi-arabizi',
-            version=version
+            version=f'fold_{fold_num}_version_{version}'
         )
 
         cbs = [es, ckpt_cb, gpu_stats]
@@ -259,7 +274,7 @@ def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
             th.jit.save(
                 model.to_torchscript(),
                 os.path.join(
-                    Config.models_dir,
+                    Config.models_dir+'/kfolds',
                     fn
                 )
             )
@@ -278,22 +293,6 @@ def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
 
     gc.collect()  # collect garbage
 
-# CUSTOM LEARNING SCHEUDLE
-# """
-# from https://www.kaggle.com/cdeotte/how-to-compete-with-gpus-workshop#STEP-4:-Training-Schedule
-# """
-
-
-def ramp_scheduler(epoch):
-    if epoch < LR_RAMPUP_EPOCHS:
-        lr = (LR_MAX - LR_START) / LR_RAMPUP_EPOCHS * epoch + LR_START
-    elif epoch < LR_RAMPUP_EPOCHS + LR_SUSTAIN_EPOCHS:
-        lr = LR_MAX
-    else:
-        lr = LR_MAX * \
-            LR_STEP_DECAY**((epoch - LR_RAMPUP_EPOCHS - LR_SUSTAIN_EPOCHS)//10)
-    return lr
-
 
 def load_models(n_folds: int = None, version: int = 0, arch: str = Config.base_model):
     """
@@ -302,25 +301,39 @@ def load_models(n_folds: int = None, version: int = 0, arch: str = Config.base_m
     models_list = [m for m in sorted(os.listdir(Config.models_dir)) if m.split(
         '.')[-1] in ['bin', 'pt', 'pth', 'model']]
 
-    matching_models = [m for m in models_list if arch in m]
-    print("[INFO] Matching models found : \n", matching_models)
+    if n_folds is not None:
+        models_list = [m for m in sorted(os.listdir(Config.models_dir+'/kfolds')) if m.split(
+            '.')[-1] in ['bin', 'pt', 'pth', 'model']]
+        matching_models = [m for m in models_list if (
+            arch in m) and (str(version) in m)]
+    else:
+        matching_models = [m for m in models_list if str(version) in m]
+        # sort list to have last version at end
+        matching_models.sort(key=natural_keys)
+
+    print(
+        f"[INFO] ({len(matching_models)}) Matching models found : \n", matching_models
+    )
     loaded_models = []
     if n_folds is not None:
         # n_folds models to load for inference
         for m_name in tqdm(matching_models, desc='Loding models'):
             if 'fold' in m_name:
                 try:
-                    m = th.jit.load(os.path.join(Config.models_dir, m_name))
+                    m = th.jit.load(os.path.join(
+                        Config.models_dir+'/kfolds', m_name))
                     loaded_models.append(m)
-                    assert len(loaded_models) == n_folds
+
                 except Exception as e:
-                    print(f'[ERROR] while loading model : {e}')
+                    print(f'[ERROR] Model not found : {e}')
+
+        assert len(loaded_models) == n_folds
     else:
         # one model to load using the version number
         try:
-
             m_name = "".join(
                 [md for md in matching_models if str(version) in md]
+
             )
             # print(m_name)
             m = th.jit.load(os.path.join(Config.models_dir, m_name))
@@ -332,7 +345,7 @@ def load_models(n_folds: int = None, version: int = 0, arch: str = Config.base_m
     return loaded_models
 
 
-def predict(dataset: DataSet, model: pl.LightningModule, batch_size=16, n_folds=None):
+def predict(dataset: DataSet, models: list, batch_size=16, n_folds=None):
 
     test_dl = DataLoader(
         dataset=dataset,
@@ -341,21 +354,71 @@ def predict(dataset: DataSet, model: pl.LightningModule, batch_size=16, n_folds=
     )
 
     predictions = []
+    all_predictions = []
 
     if n_folds is None:
+        assert len(models) == 1
+        model = models[0]
         with th.no_grad():
             model.eval()
             model.cuda()
             for data in tqdm(test_dl, desc='Predicting'):
                 ids = data['ids']
                 logits = model(ids.cuda())
-                # as we added 1 to avoid target from being < 0 (Negative sentiment)
-                reformat_pred = logits.argmax(dim=1) - 1
-                predictions += (reformat_pred.detach().cpu().numpy().tolist())
-    else:
-        pass
+                pred = logits.argmax(dim=1)
 
-    return predictions
+                predictions += (pred.detach().cpu().numpy().tolist())
+
+        # as we added 1 to avoid target from being < 0 (Negative sentiment)
+        # we need to reformat the predictions
+        for idx, p in enumerate(predictions):
+            if p == 0:
+                predictions[idx] = -1
+            else:
+                predictions[idx] = 1
+        return predictions
+    else:
+        assert len(models) == n_folds
+        for num in range(n_folds):
+            model = models[num]
+            print(f'Model from split {num}')
+            with th.no_grad():
+                model.eval()
+                model.cuda()
+                for data in tqdm(test_dl, desc='Predicting'):
+                    ids = data['ids']
+                    logits = model(ids.cuda())
+                    # as we added 1 to avoid target from being < 0 (Negative sentiment)
+                    pred = logits.argmax(dim=1)
+                    for idx, p in enumerate(pred):
+                        if p == 0:
+                            pred[idx] = -1
+                        else:
+                            pred[idx] = 1
+
+                    predictions += (pred.detach().cpu().numpy().tolist())
+
+                all_predictions.append(np.array(predictions))
+                predictions = []
+
+                del model
+        # perform ensembling task
+        print('[INFO] Ensembling results')
+        labels = average_predictions(preds=all_predictions)
+
+        return labels
+
+
+def average_predictions(preds, threshold: float = .7):
+    predictions = np.array(preds).mean(axis=0)
+    labels = np.zeros(shape=30000, dtype=int)
+    for idx, p in enumerate(predictions):
+        if p > .5:
+            labels[idx] = 1
+        else:
+            labels[idx] = -1
+
+    return labels
 
 
 def atoi(text):

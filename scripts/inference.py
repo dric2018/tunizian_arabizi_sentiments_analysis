@@ -89,13 +89,15 @@ if __name__ == "__main__":
     # print(loaded_models)
     print('[INFO] Making predictions')
     try:
-        for m in loaded_models:
-            predictions = predict(
-                dataset=test_ds,
-                model=m,
-                batch_size=args.batch_size
-            )
+        predictions = predict(
+            dataset=test_ds,
+            models=loaded_models,
+            batch_size=args.batch_size,
+            n_folds=Config.n_folds,
+        )
+        # print("[INFO] predictions shape : ", predictions.shape)
 
+        # sys.exit()
         print('[INFO] Saving submission file')
         submission_df = pd.DataFrame({
             'ID': test_ds.text_ids,
@@ -111,6 +113,6 @@ if __name__ == "__main__":
         print('[INFO] Showing submission file head')
         print(submission_df.head())
 
-        print(f'[INFO] Ssubmission file saved as {fname}')
+        print(f'[INFO] Submission file saved as {fname}')
     except Exception as e:
         print(f'[ERROR] While predicting in inference.py {e}')

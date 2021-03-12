@@ -35,12 +35,23 @@ class LSTMModel(pl.LightningModule):
         self,
         embedding_dim: int = Config.embedding_dim,
         num_layers: int = Config.num_layers,
-        bidirectional: bool = True,
-        hidden_size: int = Config.hidden_size
+        bidirectional: bool = Config.bidirectional,
+        hidden_size: int = Config.hidden_size,
+        max_len=Config.max_len
     ):
         super(LSTMModel, self).__init__()
         self.save_hyperparameters()
         # print(self.hparams)
+
+        ###################################################
+        # These params are use to convert the trained model
+        # to scriptmodule for inference
+        self.bidirectional = bidirectional
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        self.dv = "cuda"
+        ##################################################
+
         self.best_acc = 0
 
         # architecture
@@ -50,16 +61,18 @@ class LSTMModel(pl.LightningModule):
         # Embedding layer
         self.embedding_layer = nn.Embedding(
             num_embeddings=self.tokenizer.vocab_size + 1,
-            embedding_dim=self.hparams.embedding_dim
+            embedding_dim=self.hparams.embedding_dim,
+            padding_idx=self.tokenizer.pad_token_id
         )
-        # self.embedding_layer.requires_grad = False
+        for p in self.embedding_layer.parameters():
+            p.requires_grad = False
         # Reccurent layer(s)
         self.lstm = nn.LSTM(
             input_size=self.hparams.embedding_dim,
             num_layers=self.hparams.num_layers,
             hidden_size=self.hparams.hidden_size,
-            dropout=Config.drop_out_prob,
             bidirectional=self.hparams.bidirectional,
+            dropout=Config.drop_out_prob,
             batch_first=True
         )
         self.drop_layer = nn.Dropout(p=Config.drop_out_prob)
@@ -77,40 +90,47 @@ class LSTMModel(pl.LightningModule):
             )
 
     def configure_optimizers(self):
+        params = [p for p in self.parameters() if p.requires_grad]
         opt = th.optim.AdamW(
             lr=Config.lr,
-            params=[p for p in self.parameters() if p.requires_grad],
+            params=params,
             eps=Config.eps,
             weight_decay=Config.weight_decay
         )
 
-        scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
+        scheduler = th.optim.lr_scheduler.LambdaLR(
             optimizer=opt,
-            mode='max',
-            factor=0.1,
-            patience=Config.early_stopping_patience,
-            threshold=0.0001,
-            threshold_mode='rel',
-            cooldown=0,
-            min_lr=0,
-            eps=Config.eps,
-            verbose=True,
+            lr_lambda=utils.ramp_scheduler,
+            verbose=True
         )
-        return {"optimizer": opt,
-                "lr_scheduler": scheduler,
-                "monitor": "val_acc"}
+
+        return [opt], [scheduler]
 
     def forward(self, x: th.Tensor):
 
-        bs = x.shape[0]
-        if bs > 1:
+        if x.shape[0] > 1:
             # squeeze extra dimension
             x = x.squeeze(1)
 
+        # initial states
+        # shape (num_layers * num_directions, batch, hidden_size)
+        if self.bidirectional:
+            h0 = th.zeros(size=(self.num_layers*2, x.shape[0],
+                                self.hidden_size)).to(self.dv)
+            c0 = th.zeros(size=(self.num_layers*2, x.shape[0],
+                                self.hidden_size)).to(self.dv)
+        else:
+            h0 = th.zeros(size=(self.num_layers, x.shape[0],
+                                self.hidden_size)).to(self.dv)
+            c0 = th.zeros(size=(self.num_layers, x.shape[0],
+                                self.hidden_size)).to(self.dv)
         emb = self.embedding_layer(x)
         # print('[INFO] emb shape : ', emb.shape)
 
-        lstm_out, (h_n, c_n) = self.lstm(emb)
+        # print('[INFO] c0 shape : ', c0.shape)
+        # print('[INFO] h0 shape : ', h0.shape)
+
+        lstm_out, (h_n, c_n) = self.lstm(emb, (h0, c0))
         # print('[INFO] lstm_out shape : ', lstm_out.shape)
         # print('[INFO] h_n shape : ', h_n.shape)
         # print('[INFO] c_n shape : ', c_n.shape)
@@ -122,13 +142,13 @@ class LSTMModel(pl.LightningModule):
 
         # concat
         # features = th.cat((avg_pool, max_pool), dim=1)
-        features = avg_pool  # (avg_pool + max_pool) / 2
+        features = max_pool  # (avg_pool + max_pool) / 2
         # print('[INFO] features shape : ', features.shape)
         # apply classification layer
-        out = th.sigmoid(self.fc(self.drop_layer(features)))
+        out = self.fc(self.drop_layer(features))
         # print('[INFO] out shape : ', out.shape)
 
-        return out
+        return out  # th.sigmoid(out) if BCELoss used
 
     def training_step(self, batch, batch_idx):
         x, y = batch['ids'], batch['target']
@@ -244,7 +264,7 @@ class LSTMModel(pl.LightningModule):
         if bs > 1:
             # squeeze extra dimension
             targets = targets.squeeze(1)
-        return nn.BCELoss(weight=None)(logits.cpu(), targets.cpu())
+        return nn.BCEWithLogitsLoss(weight=None)(logits.cpu(), targets.cpu())
 
 
 class GRUModel(pl.LightningModule):
@@ -253,11 +273,22 @@ class GRUModel(pl.LightningModule):
         embedding_dim: int = Config.embedding_dim,
         num_layers: int = Config.num_layers,
         bidirectional: bool = True,
-        hidden_size: int = 128
+        hidden_size: int = Config.hidden_size,
+        max_len=Config.max_len
     ):
         super(GRUModel, self).__init__()
         self.save_hyperparameters()
         # print(self.hparams)
+        self.best_acc = 0
+
+        ###################################################
+        # These params are use to convert the trained model
+        # to scriptmodule for inference
+        self.bidirectional = bidirectional
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+        self.dv = "cuda"
+        ##################################################
 
         # architecture
         print(f'[INFO] Using {Config.base_model} as base model')
@@ -266,7 +297,8 @@ class GRUModel(pl.LightningModule):
         # Embedding layer
         self.embedding_layer = nn.Embedding(
             num_embeddings=self.tokenizer.vocab_size + 1,
-            embedding_dim=self.hparams.embedding_dim
+            embedding_dim=self.hparams.embedding_dim,
+            padding_idx=self.tokenizer.pad_token_id
         )
         # self.embedding_layer.requires_grad = False
         # Reccurent layer(s)
@@ -293,18 +325,18 @@ class GRUModel(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        opt = th.optim.Adam(
+        opt = th.optim.Adamax(
             lr=Config.lr,
             params=[p for p in self.parameters() if p.requires_grad],
-            # eps=Config.eps,
-            # weight_decay=Config.weight_decay
+            eps=Config.eps,
+            weight_decay=Config.weight_decay
         )
 
         scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer=opt,
             mode='max',
             factor=0.1,
-            patience=Config.early_stopping_patience,
+            patience=Config.reducing_lr_patience,
             threshold=0.0001,
             threshold_mode='rel',
             cooldown=0,
@@ -323,10 +355,17 @@ class GRUModel(pl.LightningModule):
             # squeeze extra dimension
             x = x.squeeze(1)
 
+        if self.bidirectional:
+            h0 = th.zeros(size=(self.num_layers*2, x.shape[0],
+                                self.hidden_size)).to(self.dv)
+        else:
+            h0 = th.zeros(size=(self.num_layers, x.shape[0],
+                                self.hidden_size)).to(self.dv)
+
         emb = self.embedding_layer(x)
         # print('[INFO] emb shape : ', emb.shape)
 
-        gru_out, h_n = self.gru(emb)
+        gru_out, h_n = self.gru(emb, h0)
         # print('[INFO] gru_out shape : ', gru_out.shape)
         # print('[INFO] h_n shape : ', h_n.shape)
         # print('[INFO] c_n shape : ', c_n.shape)
@@ -338,7 +377,7 @@ class GRUModel(pl.LightningModule):
 
         # concat
         # features = th.cat((avg_pool, max_pool), dim=1)
-        features = avg_pool  # (avg_pool + max_pool) / 2
+        features = max_pool  # (avg_pool + max_pool) / 2
         # print('[INFO] features shape : ', features.shape)
         # apply classification layer
 
@@ -439,9 +478,16 @@ class GRUModel(pl.LightningModule):
 
         # monitor acc improvements
         if avg_acc > self.best_acc:
+            print("\n")
             print(
-                f'[INFO] accuracy improved from {self.best_acc} to {avg_acc}')
+                f'[INFO] accuracy improved from {self.best_acc} to {avg_acc}'
+            )
             self.best_acc = avg_acc
+            print()
+        else:
+            print("\n")
+            print('[INFO] accuracy did not improve')
+            print()
 
     def get_acc(self, preds, targets):
         bs = targets.shape[0]
@@ -459,10 +505,12 @@ class GRUModel(pl.LightningModule):
 
 
 class BertBaseModel(pl.LightningModule):
-    def __init__(
-            self,):
+    def __init__(self):
         super(BertBaseModel, self).__init__()
-        self.save_hyperparameters()
+        try:
+            self.save_hyperparameters()
+        except:
+            pass
         # print(self.hparams)
 
         # architecture
@@ -470,6 +518,9 @@ class BertBaseModel(pl.LightningModule):
 
         # Encoder
         self.encoder = AutoModel.from_pretrained(Config.base_model)
+        # freeze encoder
+        for p in self.encoder.parameters():
+            p.requires_grad = False
         # classifier
 
         self.fc = nn.Linear(
@@ -480,10 +531,10 @@ class BertBaseModel(pl.LightningModule):
     def configure_optimizers(self):
         no_decay = ['bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
-            {'params': [p for n, p in model.named_parameters() if not any(
-                nd in n for nd in no_decay)], 'weight_decay': 0.01},
-            {'params': [p for n, p in model.named_parameters() if any(
-                nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            {'params': [p for n, p in self.parameters() if not any(
+                nd in n for nd in no_decay) and (p.requires_grad != False)], 'weight_decay': 0.01},
+            {'params': [p for n, p in self.named_parameters() if any(
+                nd in n for nd in no_decay) and (p.requires_grad != False)], 'weight_decay': 0.0}
         ]
         opt = th.optim.AdamW(
             params=optimizer_grouped_parameters,
@@ -505,9 +556,21 @@ class BertBaseModel(pl.LightningModule):
             x = x.squeeze(1)
 
         # features extraction
-        h_n, _ = self.encoder(x)
-        features = th.max(h_n[:, 1], axis=1)
+        enc_out = self.encoder(x, attention_mask=mask)
+        if len(enc_out) > 1:
+            last_h_state = enc_out.last_hidden_state
+            pooler_out = enc_out.pooler_output
+        else:
+            last_h_state = enc_out.last_hidden_state
+            pooler_out = th.max(input=last_h_state, dim=1).values
+        # print('[INFO] enc out : ', enc_out)
+        # print('[INFO] last_h_state shape : ', last_h_state.shape)
+        # print('[INFO] pooler_out shape : ', pooler_out.shape)
+
+        # features = last_h_state[:, 1]  # th.max(last_h_state[:, 1], axis=1)
+        features = pooler_out  # th.max(last_h_state[:, 1], axis=1)
         # print('[INFO] features shape : ', features.shape)
+
         # apply classification layer
         out = th.sigmoid(self.fc(features))
         # print('[INFO] out shape : ', out.shape)
@@ -622,18 +685,20 @@ if __name__ == "__main__":
     tfareh la3bed w ki tosel lli t7eb 3lih haka lwa9et 9abloni \
     ken 3mel 7ata 7aja barka meli 9alhoum elkoul taw y8rouf w yrawa7"
 
-    tgt = th.eye(3)[0].view(1, -1)
+    tgt = th.eye(Config.n_classes)[0].view(1, -1)
 
     print('[INFO] Building model')
     # tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
     try:
         if args.model_type.lower() == 'lstm':
-            model = LSTMModel()
+            model = LSTMModel().cuda()
         elif args.model_type.lower() == 'gru':
-            model = GRUModel()
+            model = GRUModel().cuda()
         else:
-            model = BertBaseModel()
-        # print('[INFO] Model built')
+            model = BertBaseModel().cuda()
+
+        print('[INFO] Model built')
+
         # print(model)
 
         # print('[INFO] Getting tokens')
@@ -668,7 +733,8 @@ if __name__ == "__main__":
         dm.setup()
 
         for batch in dm.val_dataloader():
-            ids, mask, targets = batch['ids'], batch['mask'], batch['target']
+            ids, mask, targets = batch['ids'].cuda(
+            ), batch['mask'].cuda(), batch['target'].cuda()
             print('[INFO] input_ids shape :', ids.shape)
             print('[INFO] Attention mask shape :', mask.shape)
             print('[INFO] Targets shape :', targets.shape)
@@ -686,26 +752,24 @@ if __name__ == "__main__":
                         x=ids
                     )
 
-                    print(e)
-                    logits = model(ids)
-                    print("[INFO] logits shape : ", logits.shape)
-                    # print("[INFO] Logits : ", logits)
+                print("[INFO] logits shape : ", logits.shape)
+                # print("[INFO] Logits : ", logits)
 
-                    print("[INFO] Target shape : ", targets.shape)
-                    # print("[INFO] Target : ", targets)
+                print("[INFO] Target shape : ", targets.shape)
+                # print("[INFO] Target : ", targets)
 
-                    preds = th.argmax(input=logits, dim=-1)
-                    print("[INFO] preds shape : ", preds.shape)
-                    print("[INFO] preds : ", preds)
+                preds = th.argmax(input=logits, dim=-1)
+                print("[INFO] preds shape : ", preds.shape)
+                print("[INFO] preds : ", preds)
 
-                    print("[INFO] Computing accuracy")
-                    acc = model.get_acc(preds=preds, targets=targets)
+                print("[INFO] Computing accuracy")
+                acc = model.get_acc(preds=preds, targets=targets)
 
-                    print("[INFO] Computing loss")
-                    loss = model.get_loss(logits=logits, targets=targets)
+                print("[INFO] Computing loss")
+                loss = model.get_loss(logits=logits, targets=targets)
 
-                    print("[INFO] acc : ", acc)
-                    print("[INFO] loss : ", loss)
+                print("[INFO] acc : ", acc)
+                print("[INFO] loss : ", loss)
 
             except Exception as e:
                 print(e)

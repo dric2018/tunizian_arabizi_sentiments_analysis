@@ -90,10 +90,15 @@ TfIdfVectorizer + Naive Bayes (5-folds)
   - local score : Nan
   - LB score : NAN
 
-- unfreeze camembert-base embeddings + 2 layers LSTM + 5 folds
+- unfreeze camembert-base embeddings + 2 layers GRU (5 folds)
 
-  - local score : Nan
-  - LB score : NAN
+  - local score : 0.7959774851799011
+  - LB score : 0.787533333333333
+
+* freeze camembert-base embeddings + 1 \* lstm (5 folds) `**_Best_**`
+
+  - local score : 0.8133704185485839
+  - LB score : 0.816866666666667
 
 ### Exp 4 : BERT-like transformers:
 

@@ -47,15 +47,17 @@ class DataSet(Dataset):
         # print(code)
 
         sample = {
-            'text': str(text),  # image tensor
+            'text': str(text),  # original text
+            # add .float() if embedding layer not used
             'ids': code['input_ids'].clone().detach(),
-            'mask': code['attention_mask'].clone().detach().float(),
+            # add .float() if embedding layer not used
+            'mask': code['attention_mask'].clone().detach(),
 
         }
 
         if self.task == 'train':
-            # put the targets in the range [0..2]
-            target = self.df.iloc[index].label + 1
+            target = self.df.iloc[index].label
+
             sample.update({
                 # use one-hot representation
                 'target': th.eye(n=Config.n_classes)[target].view(1, -1)
@@ -128,7 +130,7 @@ class DataModule(pl.LightningDataModule):
 
 
 if __name__ == '__main__':
-    df = pd.read_csv(os.path.join(Config.data_dir, 'Train_10_folds.csv'))
+    df = pd.read_csv(os.path.join(Config.data_dir, 'Train_5_folds.csv'))
     dm = DataModule(
         df=df,
         frac=1,
@@ -139,4 +141,7 @@ if __name__ == '__main__':
     print('[INFO] Setting data module up')
     dm.setup()
 
-    print(dm.train_ds[4])
+    print(dm.train_ds[0])
+    tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
+
+    print(tokenizer('<pad>'))

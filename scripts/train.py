@@ -20,6 +20,9 @@ from dataset import DataSet, DataModule
 import models
 import argparse
 
+import warnings
+warnings.filterwarnings(action='ignore')
+
 parser = argparse.ArgumentParser()
 
 parser.add_argument(
@@ -30,16 +33,18 @@ parser.add_argument(
     help='Type of model architechture to use, one of lstm, gru, transformer'
 )
 
-# set seed for repro
-_ = seed_everything(seed=Config.seed_value)
 
 if __name__ == '__main__':
+    # set seed for repro
+    _ = seed_everything(seed=Config.seed_value)
+
     args = parser.parse_args()
 
     # get datasets
     df = pd.read_csv(os.path.join(Config.data_dir, 'Train_5_folds.csv'))
+    df = df.reset_index(drop=True)  # shuffle data
     # save experiment config
-    version = save_experiment_conf()
+    version = utils.save_experiment_conf()
     if Config.n_folds is not None:
         _ = utils.run_on_folds(df=df, args=args, version=version)
     else:
@@ -69,7 +74,7 @@ if __name__ == '__main__':
             monitor='val_acc',
             mode='max',
             dirpath=Config.models_dir,
-            filename=f'{Config.base_model}-{args.model_type}' +
+            filename=f'{Config.base_model}-{args.model_type}-version-{version}' +
             '-arabizi-{val_acc:.5f}-{val_loss:.5f}'
         )
 
@@ -99,14 +104,14 @@ if __name__ == '__main__':
         print('[INFO] Building trainer')
         trainer = Trainer(
             gpus=1,
-            precision=32,
+            precision=Config.precision,
             max_epochs=Config.num_epochs,
             callbacks=cbs,
             logger=Logger,
             deterministic=True,
+            accumulate_grad_batches=Config.accumulate_grad_batches,
             # fast_dev_run=True
         )
-
         print(f'[INFO] Runing experiment N° {version}')
         # train/eval/save model(s)
         print(f'[INFO] Training model for {Config.num_epochs} epochs')
@@ -120,7 +125,6 @@ if __name__ == '__main__':
         duration = (end - start) / 60
         print(f'[INFO] Training time : {duration} mn')
         print("[INFO] Best accuracy = ", model.best_acc.cpu().item())
-        sys.exit()
         print(f'[INFO] Saving model for inference')
         try:
             fn = f'arabizi-sentiments-{Config.base_model}-version-{version}.bin'
