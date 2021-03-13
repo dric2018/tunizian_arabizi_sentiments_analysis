@@ -26,7 +26,7 @@ parser.add_argument(
     '-mt',
     type=str,
     default='lstm',
-    help='Type of model architechture to use, one of lstm, gru, bert'
+    help='Type of model architechture to use, one of lstm, gru, bert, transformer'
 )
 
 
@@ -148,7 +148,8 @@ class LSTMModel(pl.LightningModule):
         out = self.fc(self.drop_layer(features))
         # print('[INFO] out shape : ', out.shape)
 
-        return out  # th.sigmoid(out) if BCELoss used
+        # th.sigmoid(out) if BCELoss used
+        return F.log_softmax(input=out, dim=1)
 
     def training_step(self, batch, batch_idx):
         x, y = batch['ids'], batch['target']
@@ -254,17 +255,17 @@ class LSTMModel(pl.LightningModule):
 
     def get_acc(self, preds, targets):
         bs = targets.shape[0]
-        if bs > 1:
-            # squeeze extra dimension
-            targets = targets.squeeze(1)
-        return (preds == targets.argmax(dim=1)).float().mean()
+        # if bs > 1:
+        # squeeze extra dimension
+        #    targets = targets.squeeze(1)
+        return (preds == targets).float().mean()
 
     def get_loss(self, logits, targets):
         bs = targets.shape[0]
-        if bs > 1:
-            # squeeze extra dimension
-            targets = targets.squeeze(1)
-        return nn.BCEWithLogitsLoss(weight=None)(logits.cpu(), targets.cpu())
+        # if bs > 1:
+        # squeeze extra dimension
+        #    targets = targets.squeeze(1)
+        return nn.NLLLoss(weight=None)(logits.cpu(), targets.cpu())
 
 
 class GRUModel(pl.LightningModule):
@@ -504,6 +505,228 @@ class GRUModel(pl.LightningModule):
         return nn.BCELoss(weight=None)(logits.cpu(), targets.cpu())
 
 
+class TransformerModel(pl.LightningModule):
+    def __init__(
+        self,
+        embedding_dim: int = Config.embedding_dim,
+        num_layers: int = Config.num_layers,
+        max_len=Config.max_len,
+        dim_feedforward=Config.dim_feedforward,
+        nhead=Config.nhead,
+        dropout=Config.drop_out_prob
+    ):
+        super(TransformerModel, self).__init__()
+        self.save_hyperparameters()
+        # print(self.hparams)
+
+        ###################################################
+        # These params are use to convert the trained model
+        # to scriptmodule for inference
+        self.num_layers = num_layers
+        self.dv = "cuda"
+        ##################################################
+
+        self.best_acc = 0
+
+        # architecture
+        print(f'[INFO] Using {Config.base_model} as base model')
+        # tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
+        # Embedding layer
+        self.embedding_layer = nn.Embedding(
+            num_embeddings=self.tokenizer.vocab_size + 1,
+            embedding_dim=self.hparams.embedding_dim,
+            padding_idx=self.tokenizer.pad_token_id
+        )
+        for p in self.embedding_layer.parameters():
+            p.requires_grad = False
+        # Reccurent layer(s)
+        self.encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hparams.embedding_dim,
+            nhead=self.hparams.nhead,
+            dim_feedforward=self.hparams.dim_feedforward,
+            dropout=self.hparams.dropout
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer=self.encoder_layer,
+            num_layers=self.hparams.num_layers,
+            norm=None
+        )
+
+        self.norm = nn.LayerNorm(normalized_shape=self.hparams.embedding_dim)
+        self.drop_layer = nn.Dropout(p=Config.drop_out_prob)
+
+        # classifier
+
+        self.classifier = nn.Linear(
+            in_features=self.hparams.embedding_dim*self.hparams.max_len,
+            out_features=Config.n_classes
+        )
+
+    def configure_optimizers(self):
+        params = [p for p in self.parameters() if p.requires_grad]
+        opt = th.optim.AdamW(
+            lr=Config.lr,
+            params=params,
+            eps=Config.eps,
+            weight_decay=Config.weight_decay
+        )
+
+        scheduler = th.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer=opt,
+            mode='max',
+            factor=0.1,
+            patience=Config.reducing_lr_patience,
+            threshold=0.0001,
+            threshold_mode='rel',
+            cooldown=0,
+            min_lr=0,
+            eps=Config.eps,
+            verbose=True,
+        )
+        return {"optimizer": opt,
+                "lr_scheduler": scheduler,
+                "monitor": "val_acc"}
+
+    def forward(self, x: th.Tensor):
+        # get batch size
+        bs = x.shape[0]
+        if bs > 1:
+            x = x.squeeze(1)  # remove extra dimension
+        # embed inputs
+        emb = self.embedding_layer(x)
+        # print(f'[INFO] emb shape :', emb.shape)
+        # transformer needs shape (seq_len, batch_size, d_model)
+        features = self.encoder(emb.transpose(1, 0))
+        features = self.norm(features)
+        # print(f'[INFO] features shape :', features.shape)
+        # apply dropout
+        out = self.drop_layer(features)
+        # reshape out for classification (bs, d_model*seq_len)
+        out = out.view(bs, -1)
+        # classification
+
+        out = self.classifier(out)
+        # print(f'[INFO] out shape', out.shape)
+        return F.log_softmax(out)
+
+    def training_step(self, batch, batch_idx):
+        x, y = batch['ids'], batch['target']
+        # forward pass
+        logits = self(x)
+        # get predictions
+        preds = logits.argmax(dim=1)
+        # get loss
+        train_loss = self.get_loss(logits=logits, targets=y)
+        # get accuracy
+        train_acc = self.get_acc(preds=preds, targets=y)
+
+        self.log('train_acc',
+                 train_acc,
+                 prog_bar=True,
+                 on_step=True,
+                 on_epoch=True)
+
+        return {'loss': train_loss,
+                'accuracy': train_acc,
+                "predictions": preds,
+                'targets': y
+                }
+
+    def training_epoch_end(self, outputs):
+        #  the function is called after every epoch is completed
+
+        # calculating average loss
+        avg_loss = th.stack([x['loss'] for x in outputs]).mean()
+        # acc
+        avg_acc = th.stack([x['accuracy'] for x in outputs]).mean()
+
+        # logging using tensorboard logger
+        self.logger.experiment.add_scalar("Loss/Train",
+                                          avg_loss,
+                                          self.current_epoch)
+
+        self.logger.experiment.add_scalar("Accuracy/Train",
+                                          avg_acc,
+                                          self.current_epoch)
+
+    def validation_step(self, batch, batch_idx):
+        x, y = batch['ids'], batch['target']
+        # forward pass
+        logits = self(x)
+        # get predictions
+        preds = logits.argmax(dim=1)
+        # get loss
+        val_loss = self.get_loss(logits=logits, targets=y)
+        # get accuracy
+        val_acc = self.get_acc(preds=preds, targets=y)
+
+        self.log('val_acc',
+                 val_acc,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True)
+
+        self.log('val_loss',
+                 val_loss,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True)
+
+        return {'loss': val_loss,
+                'accuracy': val_acc,
+                "predictions": preds,
+                'targets': y
+                }
+
+    def validation_epoch_end(self, outputs):
+        #  the function is called after every epoch is completed
+
+        # calculating average loss
+        avg_loss = th.stack([x['loss'] for x in outputs]).mean()
+        # acc
+        avg_acc = th.stack([x['accuracy'] for x in outputs]).mean()
+
+        # logging using tensorboard logger
+        self.logger.experiment.add_scalar(
+            "Loss/Validation",
+            avg_loss,
+            self.current_epoch
+        )
+
+        self.logger.experiment.add_scalar(
+            "Accuracy/Validation",
+            avg_acc,
+            self.current_epoch
+        )
+        # monitor acc improvements
+        if avg_acc > self.best_acc:
+            print("\n")
+            print(
+                f'[INFO] accuracy improved from {self.best_acc} to {avg_acc}'
+            )
+            self.best_acc = avg_acc
+            print()
+        else:
+            print("\n")
+            print('[INFO] accuracy did not improve')
+            print()
+
+    def get_acc(self, preds, targets):
+        bs = targets.shape[0]
+        # if bs > 1:
+        # squeeze extra dimension
+        #    targets = targets.squeeze(1)
+        return (preds == targets).float().mean()
+
+    def get_loss(self, logits, targets):
+        bs = targets.shape[0]
+        # if bs > 1:
+        # squeeze extra dimension
+        #    targets = targets.squeeze(1)
+        return nn.NLLLoss(weight=None)(logits.cpu(), targets.cpu())
+
+
 class BertBaseModel(pl.LightningModule):
     def __init__(self):
         super(BertBaseModel, self).__init__()
@@ -679,47 +902,27 @@ class BertBaseModel(pl.LightningModule):
 if __name__ == "__main__":
     args = parser.parse_args()
 
-    txt = "owel mara n7es eli echa3eb etounsi togrih il o3oud \
-    il kadhba eli 7achtou bech i7asen men bladou rahou men \
-    9bal elenti5abet b barcha bech ta3mel ki 8irek ta7ki w \
-    tfareh la3bed w ki tosel lli t7eb 3lih haka lwa9et 9abloni \
-    ken 3mel 7ata 7aja barka meli 9alhoum elkoul taw y8rouf w yrawa7"
-
-    tgt = th.eye(Config.n_classes)[0].view(1, -1)
-
     print('[INFO] Building model')
-    # tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
     try:
-        if args.model_type.lower() == 'lstm':
-            model = LSTMModel().cuda()
-        elif args.model_type.lower() == 'gru':
-            model = GRUModel().cuda()
-        else:
-            model = BertBaseModel().cuda()
+        models_map = {
+            'lstm': LSTMModel,
+            'gru': GRUModel,
+            'bert': BertBaseModel,
+            'transformer': TransformerModel
+        }
+
+        model = models_map[args.model_type]().cuda()
 
         print('[INFO] Model built')
 
         # print(model)
 
-        # print('[INFO] Getting tokens')
-
-        # code = tokenizer.encode_plus(
-        #     text=txt,
-        #     padding='max_length',
-        #     max_length=Config.max_len,
-        #     truncation=True,
-        #     return_tensors='pt'
-        # )
-
-        # ids = code['input_ids']
-        # mask = code['attention_mask']
-
-        # sys.exit()
-
         print('[INFO] Loading some data')
         print("[INFO] Reading dataframe")
         train_df = pd.read_csv(os.path.join(
-            Config.data_dir, 'Train.csv'), nrows=10000)
+            Config.data_dir, 'Train_5_folds.csv'),
+            nrows=1000
+        )
 
         print("[INFO] Building data module")
         dm = DataModule(
@@ -753,14 +956,14 @@ if __name__ == "__main__":
                     )
 
                 print("[INFO] logits shape : ", logits.shape)
-                # print("[INFO] Logits : ", logits)
+                #print("[INFO] Logits : ", logits)
 
                 print("[INFO] Target shape : ", targets.shape)
                 # print("[INFO] Target : ", targets)
 
                 preds = th.argmax(input=logits, dim=-1)
                 print("[INFO] preds shape : ", preds.shape)
-                print("[INFO] preds : ", preds)
+                # print("[INFO] preds : ", preds)
 
                 print("[INFO] Computing accuracy")
                 acc = model.get_acc(preds=preds, targets=targets)

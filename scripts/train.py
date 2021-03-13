@@ -61,12 +61,14 @@ if __name__ == '__main__':
         # build model
         print('[INFO] Building model')
 
-        if args.model_type.lower() == 'lstm':
-            model = models.LSTMModel()
-        elif args.model_type.lower() == 'gru':
-            model = models.GRUModel()
-        else:
-            model = models.BertBaseModel()
+        models_map = {
+            'lstm': models.LSTMModel,
+            'gru': models.GRUModel,
+            'bert': models.BertBaseModel,
+            'transformer': models.TransformerModel
+        }
+
+        model = models_map[args.model_type]()
 
         # config training pipeline
         print('[INFO] Callbacks and loggers configuration')

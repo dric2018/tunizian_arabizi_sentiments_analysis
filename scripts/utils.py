@@ -68,7 +68,7 @@ def load_vectors(fname):
     return data
 
 
-def remove_repetitions(sequence: str, n_repetitions: int = 3):
+def remove_repetitions(sequence: str, n_letters_repetitions: int = 2, n_pattern_repetitions: int = 2):
     """
     Clean text by removing most repetitive letters 
 
@@ -81,15 +81,30 @@ def remove_repetitions(sequence: str, n_repetitions: int = 3):
     words = sequence.split()
     text = []
     for word in words:
-        for letter in word:
-            letter_count = word.count(letter)
-            if letter_count > n_repetitions:
-                try:
-                    int(word)
-                    float(word)
-                except ValueError:
-                    word = word.replace(letter*letter_count,
-                                        letter*n_repetitions)
+        try:
+            # is the current <word> an integer or a float number
+            # (I know a regex woud have been better but I do not understand it at all)
+            int(word)
+            float(word)
+        except ValueError:
+            for idx, letter in enumerate(word):
+                letter_count = word[idx:].count(letter)
+                pattern = word[idx:idx+4]
+
+                if letter_count > n_letters_repetitions:
+
+                    # filter 1 : limit repetitive consecutive letters to n_repetritions
+                    word = word.replace(
+                        letter*letter_count,
+                        letter*n_letters_repetitions
+                    )
+
+                # filter 2 : remove repetitive patterns to reduce words like <ahahahahaha> or <hihihihihih>
+                n_occur = word.count(pattern)
+
+                if n_occur > n_pattern_repetitions:
+                    # print(pattern, n_occur)
+                    word = word.replace(pattern, "")
 
         text.append(word)
 
@@ -149,31 +164,35 @@ def show_lengths_distribution(data: pd.DataFrame):
     plt.show()
 
 
-def make_folds(data: pd.DataFrame, args: Union[argparse.Namespace, type], target_col='label', stratified: bool = True):
+def make_folds(data: pd.DataFrame, n_folds: int = 5, target_col='label', stratified: bool = True, preprocess=False):
     data['fold'] = 0
-    # apply some cleaning
-    data.text = data['text'].apply(
-        lambda txt: replace_accents(
-            remove_repetitions(sequence=txt, n_repetitions=3)
+    if preprocess:
+        # apply some cleaning
+        data.text = data['text'].apply(
+            lambda txt: remove_repetitions(
+                sequence=replace_accents(text=txt),
+                n_repetitions=3
+            )
         )
-    )
     if stratified:
         fold = StratifiedKFold(
-            n_splits=args.n_folds,
-            random_state=Config.seed_value,
-            shuffle=True
-        )
-    else:
-        fold = KFold(
-            n_splits=args.n_folds,
+            n_splits=n_folds,
             random_state=Config.seed_value,
             shuffle=True
         )
 
-    for i, (tr, vr) in tqdm(enumerate(fold.split(data, data[target_col].values)), desc='Splitting', total=args.n_folds):
+    else:
+
+        fold = KFold(
+            n_splits=n_folds,
+            random_state=Config.seed_value,
+            shuffle=True
+        )
+
+    for i, (tr, vr) in tqdm(enumerate(fold.split(data, data[target_col].values)), desc='Splitting', total=n_folds):
         data.loc[vr, 'fold'] = i
 
-    return data, args.n_folds
+    return data, n_folds
 
 
 def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
@@ -204,12 +223,14 @@ def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
         # build model
         print('[INFO] Building model')
 
-        if args.model_type.lower() == 'lstm':
-            model = models.LSTMModel()
-        elif args.model_type.lower() == 'gru':
-            model = models.GRUModel()
-        else:
-            model = models.BertBaseModel()
+        models_map = {
+            'lstm': models.LSTMModel,
+            'gru': models.GRUModel,
+            'bert': models.BertBaseModel,
+            'transformer': models.TransformerModel
+        }
+
+        model = models_map[args.model_type]()
 
         # config training pipeline
         print('[INFO] Callbacks and loggers configuration')

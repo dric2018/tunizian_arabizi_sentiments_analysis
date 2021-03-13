@@ -60,7 +60,8 @@ class DataSet(Dataset):
 
             sample.update({
                 # use one-hot representation
-                'target': th.eye(n=Config.n_classes)[target].view(1, -1)
+                # 'target': th.eye(n=Config.n_classes)[target].view(1, -1)
+                'target': th.tensor(target, dtype=th.long)
             })
 
         return sample
