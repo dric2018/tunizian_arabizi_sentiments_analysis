@@ -45,6 +45,7 @@ if __name__ == '__main__':
     df = df.reset_index(drop=True)  # shuffle data
     # save experiment config
     version = utils.save_experiment_conf()
+
     if Config.n_folds is not None:
         _ = utils.run_on_folds(df=df, args=args, version=version)
     else:

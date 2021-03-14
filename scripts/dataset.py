@@ -56,12 +56,13 @@ class DataSet(Dataset):
         }
 
         if self.task == 'train':
-            target = self.df.iloc[index].label
+            # project label in the interval [0..2]
+            target = self.df.iloc[index].label + 1
 
             sample.update({
                 # use one-hot representation
-                # 'target': th.eye(n=Config.n_classes)[target].view(1, -1)
-                'target': th.tensor(target, dtype=th.long)
+                'target': th.eye(n=Config.n_classes)[target].view(1, -1)
+                # 'target': th.tensor(target, dtype=th.long)
             })
 
         return sample

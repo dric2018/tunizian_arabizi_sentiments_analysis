@@ -38,9 +38,9 @@ import re
 # learning rate schedule params
 LR_START = Config.lr
 LR_MAX = Config.lr/.1
-LR_RAMPUP_EPOCHS = 5
+LR_RAMPUP_EPOCHS = 6
 LR_SUSTAIN_EPOCHS = 0
-LR_STEP_DECAY = 0.65
+LR_STEP_DECAY = 0.8
 # CUSTOM LEARNING SCHEUDLE
 # """
 # from https://www.kaggle.com/cdeotte/how-to-compete-with-gpus-workshop#STEP-4:-Training-Schedule
@@ -257,7 +257,7 @@ def run_on_folds(df: pd.DataFrame, args, version, n_folds=Config.n_folds):
         Logger = TensorBoardLogger(
             save_dir=Config.logs_dir,
             name='zindi-arabizi',
-            version=f'fold_{fold_num}_version_{version}'
+            version=version
         )
 
         cbs = [es, ckpt_cb, gpu_stats]
@@ -410,12 +410,13 @@ def predict(dataset: DataSet, models: list, batch_size=16, n_folds=None):
                     ids = data['ids']
                     logits = model(ids.cuda())
                     # as we added 1 to avoid target from being < 0 (Negative sentiment)
-                    pred = logits.argmax(dim=1)
-                    for idx, p in enumerate(pred):
-                        if p == 0:
-                            pred[idx] = -1
-                        else:
-                            pred[idx] = 1
+                    # we need to reformat
+                    pred = logits.argmax(dim=1) - 1
+                    # for idx, p in enumerate(pred):
+                    #     if p == 0:
+                    #         pred[idx] = -1
+                    #     else:
+                    #         pred[idx] = 1
 
                     predictions += (pred.detach().cpu().numpy().tolist())
 
@@ -425,7 +426,7 @@ def predict(dataset: DataSet, models: list, batch_size=16, n_folds=None):
                 del model
         # perform ensembling task
         print('[INFO] Ensembling results')
-        labels = average_predictions(preds=all_predictions)
+        labels = average_predictions(preds=all_predictions, threshold=.5)
 
         return labels
 
@@ -434,8 +435,10 @@ def average_predictions(preds, threshold: float = .7):
     predictions = np.array(preds).mean(axis=0)
     labels = np.zeros(shape=30000, dtype=int)
     for idx, p in enumerate(predictions):
-        if p > .5:
+        if p > threshold:
             labels[idx] = 1
+        elif 0 < p < threshold:
+            labels[idx] = 0
         else:
             labels[idx] = -1
 
@@ -460,13 +463,13 @@ def natural_keys(text):
 def save_experiment_conf():
 
     walk = [folder for folder in os.listdir(os.path.join(
-        Config.logs_dir, 'zindi-arabizi')) if len(folder.split('.')) <= 1]
+        Config.logs_dir, 'zindi-arabizi')) if ("version" in folder) and (len(folder.split('.')) <= 1)]
 
     # sort the versions list
     walk.sort(key=natural_keys)
 
     if len(walk) > 0:
-        version = int(walk[-1].split('_')[-1]) + 1
+        version = int(walk[-1].split('version_')[-1]) + 1
     else:
         version = 0
 

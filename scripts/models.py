@@ -37,7 +37,8 @@ class LSTMModel(pl.LightningModule):
         num_layers: int = Config.num_layers,
         bidirectional: bool = Config.bidirectional,
         hidden_size: int = Config.hidden_size,
-        max_len=Config.max_len
+        max_len=Config.max_len,
+        drop=Config.drop_out_prob
     ):
         super(LSTMModel, self).__init__()
         self.save_hyperparameters()
@@ -58,14 +59,15 @@ class LSTMModel(pl.LightningModule):
         print(f'[INFO] Using {Config.base_model} as base model')
         # tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(Config.base_model)
+
         # Embedding layer
         self.embedding_layer = nn.Embedding(
-            num_embeddings=self.tokenizer.vocab_size + 1,
+            num_embeddings=self.tokenizer.vocab_size+1,
             embedding_dim=self.hparams.embedding_dim,
             padding_idx=self.tokenizer.pad_token_id
         )
-        for p in self.embedding_layer.parameters():
-            p.requires_grad = False
+        self.embedding_layer.weight.requires_grad = False
+
         # Reccurent layer(s)
         self.lstm = nn.LSTM(
             input_size=self.hparams.embedding_dim,
@@ -75,7 +77,8 @@ class LSTMModel(pl.LightningModule):
             dropout=Config.drop_out_prob,
             batch_first=True
         )
-        self.drop_layer = nn.Dropout(p=Config.drop_out_prob)
+        # dropout
+        self.drop_layer = nn.Dropout(p=self.hparams.drop)
 
         # classifier
         if self.hparams.bidirectional:
@@ -89,11 +92,30 @@ class LSTMModel(pl.LightningModule):
                 out_features=Config.n_classes
             )
 
+        self.init_weights()
+
+    def init_weights(self):
+        nn.init.xavier_uniform_(tensor=self.fc.weight)
+        for k in range(self.hparams.num_layers):
+            # loop accros all layers
+            nn.init.xavier_uniform_(
+                tensor=getattr(self.lstm, f"weight_ih_l{k}")
+            )
+            nn.init.xavier_uniform_(
+                tensor=getattr(self.lstm, f"weight_hh_l{k}")
+            )
+            if self.hparams.bidirectional:
+                nn.init.xavier_uniform_(
+                    tensor=getattr(self.lstm, f"weight_ih_l{k}_reverse")
+                )
+                nn.init.xavier_uniform_(
+                    tensor=getattr(self.lstm, f"weight_hh_l{k}_reverse")
+                )
+
     def configure_optimizers(self):
-        params = [p for p in self.parameters() if p.requires_grad]
-        opt = th.optim.AdamW(
+        opt = th.optim.Adam(
             lr=Config.lr,
-            params=params,
+            params=self.parameters(),
             eps=Config.eps,
             weight_decay=Config.weight_decay
         )
@@ -141,15 +163,16 @@ class LSTMModel(pl.LightningModule):
         # print('[INFO] max_pool shape : ', max_pool.shape)
 
         # concat
-        # features = th.cat((avg_pool, max_pool), dim=1)
         features = max_pool  # (avg_pool + max_pool) / 2
         # print('[INFO] features shape : ', features.shape)
         # apply classification layer
-        out = self.fc(self.drop_layer(features))
+        features = self.drop_layer(features)
+        out = self.fc(features)
         # print('[INFO] out shape : ', out.shape)
 
         # th.sigmoid(out) if BCELoss used
-        return F.log_softmax(input=out, dim=1)
+        # F.log_softmax(input=out, dim=1) if NLLLoss used
+        return th.sigmoid(out)
 
     def training_step(self, batch, batch_idx):
         x, y = batch['ids'], batch['target']
@@ -255,17 +278,17 @@ class LSTMModel(pl.LightningModule):
 
     def get_acc(self, preds, targets):
         bs = targets.shape[0]
-        # if bs > 1:
-        # squeeze extra dimension
-        #    targets = targets.squeeze(1)
-        return (preds == targets).float().mean()
+        if bs > 1:
+            # squeeze extra dimension
+            targets = targets.squeeze(1)
+        return (preds == targets.argmax(dim=1)).float().mean()
 
     def get_loss(self, logits, targets):
         bs = targets.shape[0]
-        # if bs > 1:
-        # squeeze extra dimension
-        #    targets = targets.squeeze(1)
-        return nn.NLLLoss(weight=None)(logits.cpu(), targets.cpu())
+        if bs > 1:
+            # squeeze extra dimension
+            targets = targets.squeeze(1)
+        return nn.BCELoss(weight=None)(logits.cpu(), targets.cpu())
 
 
 class GRUModel(pl.LightningModule):
@@ -301,7 +324,8 @@ class GRUModel(pl.LightningModule):
             embedding_dim=self.hparams.embedding_dim,
             padding_idx=self.tokenizer.pad_token_id
         )
-        # self.embedding_layer.requires_grad = False
+        for p in self.embedding_layer.parameters():
+            p.requires_grad = False
         # Reccurent layer(s)
         self.gru = nn.GRU(
             input_size=self.hparams.embedding_dim,
@@ -326,9 +350,9 @@ class GRUModel(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        opt = th.optim.Adamax(
+        opt = th.optim.AdamW(
             lr=Config.lr,
-            params=[p for p in self.parameters() if p.requires_grad],
+            params=self.parameters(),
             eps=Config.eps,
             weight_decay=Config.weight_decay
         )
@@ -340,7 +364,7 @@ class GRUModel(pl.LightningModule):
             patience=Config.reducing_lr_patience,
             threshold=0.0001,
             threshold_mode='rel',
-            cooldown=0,
+            cooldown=Config.cooldown,
             min_lr=0,
             eps=Config.eps,
             verbose=True,
@@ -382,10 +406,10 @@ class GRUModel(pl.LightningModule):
         # print('[INFO] features shape : ', features.shape)
         # apply classification layer
 
-        out = th.sigmoid(self.fc(self.drop_layer(features)))
+        out = self.drop_layer(self.fc(features))
         # print('[INFO] out shape : ', out.shape)
 
-        return out
+        return th.sigmoid(out)
 
     def training_step(self, batch, batch_idx):
         x, y = batch['ids'], batch['target']
@@ -753,12 +777,12 @@ class BertBaseModel(pl.LightningModule):
 
     def configure_optimizers(self):
         no_decay = ['bias', 'LayerNorm.weight']
-        optimizer_grouped_parameters = [
-            {'params': [p for n, p in self.parameters() if not any(
-                nd in n for nd in no_decay) and (p.requires_grad != False)], 'weight_decay': 0.01},
-            {'params': [p for n, p in self.named_parameters() if any(
-                nd in n for nd in no_decay) and (p.requires_grad != False)], 'weight_decay': 0.0}
-        ]
+        # optimizer_grouped_parameters = [
+        #     {'params': [p for n, p in self.parameters() if not any(
+        #         nd in n for nd in no_decay) and (p.requires_grad != False)], 'weight_decay': 0.01},
+        #     {'params': [p for n, p in self.named_parameters() if any(
+        #         nd in n for nd in no_decay) and (p.requires_grad != False)], 'weight_decay': 0.0}
+        # ]
         opt = th.optim.AdamW(
             params=optimizer_grouped_parameters,
             lr=Config.lr
@@ -956,7 +980,7 @@ if __name__ == "__main__":
                     )
 
                 print("[INFO] logits shape : ", logits.shape)
-                #print("[INFO] Logits : ", logits)
+                # print("[INFO] Logits : ", logits)
 
                 print("[INFO] Target shape : ", targets.shape)
                 # print("[INFO] Target : ", targets)
